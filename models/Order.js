@@ -1,5 +1,6 @@
 // models/Order.js
-import mongoose from 'mongoose'
+// models/Order.js
+const mongoose = require('mongoose')
 
 const orderItemSchema = new mongoose.Schema({
   product:     { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
@@ -31,4 +32,4 @@ const orderSchema = new mongoose.Schema({
   },
 }, { timestamps: true })
 
-export default mongoose.model('Order', orderSchema)
+module.exports = mongoose.model('Order', orderSchema)
