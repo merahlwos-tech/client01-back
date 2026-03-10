@@ -1,8 +1,20 @@
-const express = require('express')
-const router = express.Router()
-const Order = require('../models/Order')
-const Product = require('../models/Product')
+const express    = require('express')
+const router     = express.Router()
+const Order      = require('../models/Order')
+const Product    = require('../models/Product')
+const cloudinary = require('../config/cloudinary')
 const { authenticateAdmin } = require('../middleware/auth')
+
+// Extrait le public_id Cloudinary depuis une URL secure_url
+function extractCloudinaryPublicId(url) {
+  try {
+    // URL format: https://res.cloudinary.com/CLOUD/image/upload/v123/folder/filename.ext
+    const match = url.match(/\/upload\/(?:v\d+\/)?(.+)\.[a-z]+$/i)
+    return match ? match[1] : null
+  } catch {
+    return null
+  }
+}
 
 // POST /api/orders — Créer une commande ET décrémenter le stock immédiatement
 router.post('/', async (req, res) => {
@@ -12,7 +24,6 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'Données incomplètes' })
     }
 
-    // Vérifier le stock disponible avant de créer la commande
     for (const item of items) {
       const product = await Product.findById(item.product)
       if (!product) {
@@ -26,7 +37,6 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Décrémenter le stock
     for (const item of items) {
       await Product.updateOne(
         { _id: item.product, 'sizes.size': item.size },
@@ -34,7 +44,6 @@ router.post('/', async (req, res) => {
       )
     }
 
-    // Créer la commande
     const order = new Order({ customerInfo, items, total, status: 'en attente' })
     await order.save()
     res.status(201).json(order)
@@ -82,8 +91,6 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
 
     const oldStatus = order.status
 
-    // Remettre le stock si on annule
-    // (uniquement si la commande n'était pas déjà annulée)
     if (status === 'annulé' && oldStatus !== 'annulé') {
       for (const item of order.items) {
         await Product.updateOne(
@@ -96,6 +103,33 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     order.status = status
     await order.save()
     res.json(order)
+
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// DELETE /api/orders/:id — Supprimer une commande + logos Cloudinary
+router.delete('/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+
+    // Supprimer les logos client sur Cloudinary
+    const logoUrls = order.customerInfo?.logoUrls || []
+    if (logoUrls.length > 0) {
+      const deletePromises = logoUrls.map(url => {
+        const publicId = extractCloudinaryPublicId(url)
+        if (!publicId) return Promise.resolve()
+        return cloudinary.uploader.destroy(publicId).catch(err =>
+          console.error('Cloudinary delete error:', publicId, err.message)
+        )
+      })
+      await Promise.all(deletePromises)
+    }
+
+    await Order.findByIdAndDelete(req.params.id)
+    res.json({ message: 'Commande et logos supprimés' })
 
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })

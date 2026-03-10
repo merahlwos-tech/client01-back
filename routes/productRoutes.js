@@ -1,20 +1,9 @@
 // routes/productRoutes.js
 const express  = require('express')
 const router   = express.Router()
-const multer   = require('multer')
 const Product  = require('../models/Product')
 const { authenticateAdmin } = require('../middleware/auth')
-const { uploadProductImageToR2, deleteProductImageFromR2 } = require('../utils/uploadR2')
-
-// Multer en mémoire — on gère l'upload nous-mêmes vers R2
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits:  { fileSize: 10 * 1024 * 1024 }, // 10 MB max par image
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) cb(null, true)
-    else cb(new Error('Fichier non image refusé'), false)
-  },
-})
+const { deleteProductImageFromR2 } = require('../utils/uploadR2')
 
 // ─────────────────────────────────────────────
 // GET tous les produits (public)
@@ -44,26 +33,23 @@ router.get('/:id', async (req, res) => {
 })
 
 // ─────────────────────────────────────────────
-// POST créer un produit + upload images vers R2
+// POST créer un produit
+// Les images sont déjà uploadées sur R2 via /api/upload
+// Le frontend envoie les URLs dans body.images (JSON)
 // ─────────────────────────────────────────────
-router.post('/', authenticateAdmin, upload.array('images', 5), async (req, res) => {
+router.post('/', authenticateAdmin, async (req, res) => {
   try {
-    // Parse les champs JSON envoyés en multipart
     const body = { ...req.body }
-    if (typeof body.sizes === 'string')  body.sizes  = JSON.parse(body.sizes)
-    if (typeof body.colors === 'string') body.colors = JSON.parse(body.colors)
-    if (typeof body.tags === 'string')   body.tags   = JSON.parse(body.tags)
+    if (typeof body.sizes === 'string')       body.sizes       = JSON.parse(body.sizes)
+    if (typeof body.colors === 'string')      body.colors      = JSON.parse(body.colors)
+    if (typeof body.tags === 'string')        body.tags        = JSON.parse(body.tags)
     if (typeof body.doubleSided === 'string') body.doubleSided = body.doubleSided === 'true'
 
-    // Upload les images vers R2
-    let imageUrls = []
-    if (req.files && req.files.length > 0) {
-      imageUrls = await Promise.all(
-        req.files.map(file => uploadProductImageToR2(file.buffer))
-      )
-    }
+    // Normaliser images : string seul ou tableau
+    if (body.images && !Array.isArray(body.images)) body.images = [body.images]
+    if (!body.images) body.images = []
 
-    const product    = new Product({ ...body, images: imageUrls })
+    const product    = new Product(body)
     const newProduct = await product.save()
     res.status(201).json(newProduct)
   } catch (error) {
@@ -72,29 +58,23 @@ router.post('/', authenticateAdmin, upload.array('images', 5), async (req, res) 
 })
 
 // ─────────────────────────────────────────────
-// PUT modifier un produit (+ nouvelles images R2)
+// PUT modifier un produit
 // ─────────────────────────────────────────────
-router.put('/:id', authenticateAdmin, upload.array('images', 5), async (req, res) => {
+router.put('/:id', authenticateAdmin, async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
     if (!product) return res.status(404).json({ message: 'Produit non trouvé' })
 
     const body = { ...req.body }
-    if (typeof body.sizes === 'string')  body.sizes  = JSON.parse(body.sizes)
-    if (typeof body.colors === 'string') body.colors = JSON.parse(body.colors)
-    if (typeof body.tags === 'string')   body.tags   = JSON.parse(body.tags)
+    if (typeof body.sizes === 'string')       body.sizes       = JSON.parse(body.sizes)
+    if (typeof body.colors === 'string')      body.colors      = JSON.parse(body.colors)
+    if (typeof body.tags === 'string')        body.tags        = JSON.parse(body.tags)
     if (typeof body.doubleSided === 'string') body.doubleSided = body.doubleSided === 'true'
 
-    // Si de nouvelles images sont envoyées, supprimer les anciennes R2 + uploader les nouvelles
-    if (req.files && req.files.length > 0) {
-      // Supprimer les anciennes images R2
-      await Promise.all(product.images.map(deleteProductImageFromR2))
-
-      // Uploader les nouvelles
-      body.images = await Promise.all(
-        req.files.map(file => uploadProductImageToR2(file.buffer))
-      )
-    }
+    // Normaliser images
+    if (body.images && !Array.isArray(body.images)) body.images = [body.images]
+    // Si aucune image envoyée, conserver les existantes
+    if (!body.images || body.images.length === 0) body.images = product.images
 
     const updated = await Product.findByIdAndUpdate(
       req.params.id,
@@ -115,7 +95,6 @@ router.delete('/:id', authenticateAdmin, async (req, res) => {
     const product = await Product.findById(req.params.id)
     if (!product) return res.status(404).json({ message: 'Produit non trouvé' })
 
-    // Supprimer les images R2
     if (product.images?.length > 0) {
       await Promise.all(product.images.map(deleteProductImageFromR2))
     }
