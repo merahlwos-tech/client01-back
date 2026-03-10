@@ -1,33 +1,28 @@
 // routes/productRoutes.js
-const express = require('express')
-const router = express.Router()
-const Product = require('../models/Product')
-const cloudinary = require('../config/cloudinary')
+const express  = require('express')
+const router   = express.Router()
+const multer   = require('multer')
+const Product  = require('../models/Product')
 const { authenticateAdmin } = require('../middleware/auth')
+const { uploadProductImageToR2, deleteProductImageFromR2 } = require('../utils/uploadR2')
 
-// Extrait le public_id Cloudinary depuis une URL
-// Ex: https://res.cloudinary.com/demo/image/upload/v123/lamode28/abc.jpg → lamode28/abc
-function getPublicId(url) {
-  try {
-    const parts = url.split('/')
-    const uploadIndex = parts.indexOf('upload')
-    // Ignore la version (v123) si présente
-    const startIndex = parts[uploadIndex + 1]?.startsWith('v')
-      ? uploadIndex + 2
-      : uploadIndex + 1
-    const filePart = parts.slice(startIndex).join('/')
-    // Retire l'extension
-    return filePart.replace(/\.[^/.]+$/, '')
-  } catch {
-    return null
-  }
-}
+// Multer en mémoire — on gère l'upload nous-mêmes vers R2
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 10 * 1024 * 1024 }, // 10 MB max par image
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true)
+    else cb(new Error('Fichier non image refusé'), false)
+  },
+})
 
+// ─────────────────────────────────────────────
 // GET tous les produits (public)
+// ─────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
     const { category } = req.query
-    const filter = category ? { category } : {}
+    const filter   = category ? { category } : {}
     const products = await Product.find(filter).sort({ createdAt: -1 })
     res.json(products)
   } catch (error) {
@@ -35,7 +30,9 @@ router.get('/', async (req, res) => {
   }
 })
 
+// ─────────────────────────────────────────────
 // GET un produit par ID (public)
+// ─────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
@@ -46,10 +43,27 @@ router.get('/:id', async (req, res) => {
   }
 })
 
-// POST créer un produit (admin uniquement)
-router.post('/', authenticateAdmin, async (req, res) => {
+// ─────────────────────────────────────────────
+// POST créer un produit + upload images vers R2
+// ─────────────────────────────────────────────
+router.post('/', authenticateAdmin, upload.array('images', 5), async (req, res) => {
   try {
-    const product = new Product(req.body)
+    // Parse les champs JSON envoyés en multipart
+    const body = { ...req.body }
+    if (typeof body.sizes === 'string')  body.sizes  = JSON.parse(body.sizes)
+    if (typeof body.colors === 'string') body.colors = JSON.parse(body.colors)
+    if (typeof body.tags === 'string')   body.tags   = JSON.parse(body.tags)
+    if (typeof body.doubleSided === 'string') body.doubleSided = body.doubleSided === 'true'
+
+    // Upload les images vers R2
+    let imageUrls = []
+    if (req.files && req.files.length > 0) {
+      imageUrls = await Promise.all(
+        req.files.map(file => uploadProductImageToR2(file.buffer))
+      )
+    }
+
+    const product    = new Product({ ...body, images: imageUrls })
     const newProduct = await product.save()
     res.status(201).json(newProduct)
   } catch (error) {
@@ -57,37 +71,53 @@ router.post('/', authenticateAdmin, async (req, res) => {
   }
 })
 
-// PUT modifier un produit (admin uniquement)
-router.put('/:id', authenticateAdmin, async (req, res) => {
+// ─────────────────────────────────────────────
+// PUT modifier un produit (+ nouvelles images R2)
+// ─────────────────────────────────────────────
+router.put('/:id', authenticateAdmin, upload.array('images', 5), async (req, res) => {
   try {
-    const product = await Product.findByIdAndUpdate(
+    const product = await Product.findById(req.params.id)
+    if (!product) return res.status(404).json({ message: 'Produit non trouvé' })
+
+    const body = { ...req.body }
+    if (typeof body.sizes === 'string')  body.sizes  = JSON.parse(body.sizes)
+    if (typeof body.colors === 'string') body.colors = JSON.parse(body.colors)
+    if (typeof body.tags === 'string')   body.tags   = JSON.parse(body.tags)
+    if (typeof body.doubleSided === 'string') body.doubleSided = body.doubleSided === 'true'
+
+    // Si de nouvelles images sont envoyées, supprimer les anciennes R2 + uploader les nouvelles
+    if (req.files && req.files.length > 0) {
+      // Supprimer les anciennes images R2
+      await Promise.all(product.images.map(deleteProductImageFromR2))
+
+      // Uploader les nouvelles
+      body.images = await Promise.all(
+        req.files.map(file => uploadProductImageToR2(file.buffer))
+      )
+    }
+
+    const updated = await Product.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      body,
       { new: true, runValidators: true }
     )
-    if (!product) return res.status(404).json({ message: 'Produit non trouvé' })
-    res.json(product)
+    res.json(updated)
   } catch (error) {
     res.status(400).json({ message: error.message })
   }
 })
 
-// DELETE supprimer un produit + ses images Cloudinary (admin uniquement)
+// ─────────────────────────────────────────────
+// DELETE supprimer un produit + ses images R2
+// ─────────────────────────────────────────────
 router.delete('/:id', authenticateAdmin, async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
     if (!product) return res.status(404).json({ message: 'Produit non trouvé' })
 
-    // Supprimer les images Cloudinary
-    if (product.images && product.images.length > 0) {
-      const deletePromises = product.images.map((url) => {
-        const publicId = getPublicId(url)
-        if (publicId) {
-          return cloudinary.uploader.destroy(publicId)
-        }
-        return Promise.resolve()
-      })
-      await Promise.all(deletePromises)
+    // Supprimer les images R2
+    if (product.images?.length > 0) {
+      await Promise.all(product.images.map(deleteProductImageFromR2))
     }
 
     await Product.findByIdAndDelete(req.params.id)
