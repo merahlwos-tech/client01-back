@@ -4,6 +4,7 @@ const Order      = require('../models/Order')
 const Product    = require('../models/Product')
 const cloudinary = require('../config/cloudinary')
 const { authenticateAdmin } = require('../middleware/auth')
+const { sendMetaEvent }     = require('../utils/metaCAPI')
 
 // Extrait le public_id Cloudinary depuis une URL secure_url
 function extractCloudinaryPublicId(url) {
@@ -19,7 +20,7 @@ function extractCloudinaryPublicId(url) {
 // POST /api/orders — Créer une commande ET décrémenter le stock immédiatement
 router.post('/', async (req, res) => {
   try {
-    const { customerInfo, items, total } = req.body
+    const { customerInfo, items, total, metaEventId } = req.body
     if (!customerInfo || !items || !total) {
       return res.status(400).json({ message: 'Données incomplètes' })
     }
@@ -46,6 +47,43 @@ router.post('/', async (req, res) => {
 
     const order = new Order({ customerInfo, items, total, status: 'en attente' })
     await order.save()
+
+    // ── Meta CAPI : Purchase (fire-and-forget, ne bloque pas la réponse) ──
+    // metaEventId est généré côté Pixel dans le frontend — même ID = déduplication
+    setImmediate(async () => {
+      try {
+        const ip = (
+          req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+          req.headers['x-real-ip'] ||
+          req.socket?.remoteAddress ||
+          ''
+        ).replace('::ffff:', '')
+
+        await sendMetaEvent('Purchase', {
+          eventId:   metaEventId || undefined,
+          sourceUrl: req.headers['referer'] || '',
+          userData: {
+            phone:     customerInfo.phone,
+            firstName: customerInfo.firstName,
+            lastName:  customerInfo.lastName,
+            wilaya:    customerInfo.wilaya,
+            commune:   customerInfo.commune,
+            ip,
+            userAgent: req.headers['user-agent'],
+          },
+          customData: {
+            content_ids:  items.map(i => String(i.product)),
+            content_type: 'product',
+            num_items:    items.reduce((s, i) => s + i.quantity, 0),
+            value:        total,
+            currency:     'DZD',
+          },
+        })
+      } catch (err) {
+        console.error('Meta CAPI Purchase error:', err.message)
+      }
+    })
+
     res.status(201).json(order)
 
   } catch (err) {
