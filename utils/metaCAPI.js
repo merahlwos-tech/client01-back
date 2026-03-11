@@ -141,7 +141,7 @@ async function sendMetaEvent(eventName, { eventId, sourceUrl, userData = {}, cus
         custom_data:      customData,
       },
     ],
-    // test_event_code: 'TEST12345', // ← décommentez pendant les tests Meta Events Manager
+     test_event_code: 'TEST50771', // ← décommentez pendant les tests Meta Events Manager
   }
 
   return postToMeta(payload)
