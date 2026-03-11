@@ -1,5 +1,3 @@
-// models/Order.js
-// models/Order.js
 const mongoose = require('mongoose')
 
 const orderItemSchema = new mongoose.Schema({
@@ -17,8 +15,8 @@ const customerInfoSchema = new mongoose.Schema({
   phone:       { type: String, required: true },
   wilaya:      { type: String, required: true },
   commune:     { type: String, required: true },
-  description: { type: String, required: true },    // instructions du client
-  logoUrls:    { type: [String], required: true },  // URLs Cloudinary (1-2 photos)
+  description: { type: String, required: true },
+  logoUrls:    { type: [String], required: true },
 }, { _id: false })
 
 const orderSchema = new mongoose.Schema({
@@ -31,5 +29,13 @@ const orderSchema = new mongoose.Schema({
     default: 'en attente',
   },
 }, { timestamps: true })
+
+// ── Index ──────────────────────────────────────────────────────────────────
+// Accélère le tri par date (liste admin, toujours triée par -createdAt)
+orderSchema.index({ createdAt: -1 })
+// Accélère les filtres par statut (stats admin, très fréquents)
+orderSchema.index({ status: 1 })
+// Index composé pour les stats (status + total en un seul scan)
+orderSchema.index({ status: 1, total: 1 })
 
 module.exports = mongoose.model('Order', orderSchema)

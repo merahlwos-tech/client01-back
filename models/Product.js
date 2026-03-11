@@ -3,6 +3,7 @@ const mongoose = require('mongoose')
 const sizeSchema = new mongoose.Schema({
   size:  { type: String, required: true },
   price: { type: Number, required: true, min: 0 },
+  stock: { type: Number, default: 0, min: 0 },
 })
 
 const productSchema = new mongoose.Schema(
@@ -16,15 +17,18 @@ const productSchema = new mongoose.Schema(
     sizes:  { type: [sizeSchema], default: [] },
     images: { type: [String],    default: [] },
 
-    // Options d'impression
     colors:           { type: [String], default: [] },
     doubleSided:      { type: Boolean,  default: false },
     doubleSidedPrice: { type: Number,   default: 0, min: 0 },
-
-    // Conservé pour les collections spéciales
-    tags: { type: [String], default: [] },
+    tags:             { type: [String], default: [] },
   },
   { timestamps: true }
 )
+
+// ── Index ──────────────────────────────────────────────────────────────────
+// Accélère les requêtes GET /products?category=X (très fréquentes)
+productSchema.index({ category: 1, createdAt: -1 })
+// Accélère la recherche par nom dans l'admin
+productSchema.index({ name: 'text' })
 
 module.exports = mongoose.model('Product', productSchema)
