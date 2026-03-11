@@ -3,7 +3,6 @@ const mongoose = require('mongoose')
 const sizeSchema = new mongoose.Schema({
   size:  { type: String, required: true },
   price: { type: Number, required: true, min: 0 },
-  stock: { type: Number, default: 0, min: 0 },
 })
 
 const productSchema = new mongoose.Schema(

@@ -31,18 +31,11 @@ router.post('/', async (req, res) => {
         return res.status(404).json({ message: `Produit introuvable : ${item.name}` })
       }
       const sizeData = product.sizes.find((s) => s.size == item.size)
-      if (!sizeData || sizeData.stock < item.quantity) {
+      if (!sizeData) {
         return res.status(400).json({
-          message: `Stock insuffisant pour ${item.name} en taille ${item.size}`
+          message: `Taille ${item.size} introuvable pour ${item.name}`
         })
       }
-    }
-
-    for (const item of items) {
-      await Product.updateOne(
-        { _id: item.product, 'sizes.size': item.size },
-        { $inc: { 'sizes.$.stock': -item.quantity } }
-      )
     }
 
     const order = new Order({ customerInfo, items, total, status: 'en attente' })
@@ -115,7 +108,7 @@ router.get('/:id', authenticateAdmin, async (req, res) => {
   }
 })
 
-// PUT /api/orders/:id — Mise à jour statut + remise en stock si annulé
+// PUT /api/orders/:id — Mise à jour statut
 router.put('/:id', authenticateAdmin, async (req, res) => {
   try {
     const { status } = req.body
@@ -126,17 +119,6 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
 
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
-
-    const oldStatus = order.status
-
-    if (status === 'annulé' && oldStatus !== 'annulé') {
-      for (const item of order.items) {
-        await Product.updateOne(
-          { _id: item.product, 'sizes.size': item.size },
-          { $inc: { 'sizes.$.stock': item.quantity } }
-        )
-      }
-    }
 
     order.status = status
     await order.save()
