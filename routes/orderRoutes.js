@@ -9,7 +9,6 @@ const { sendMetaEvent }     = require('../utils/metaCAPI')
 // Extrait le public_id Cloudinary depuis une URL secure_url
 function extractCloudinaryPublicId(url) {
   try {
-    // URL format: https://res.cloudinary.com/CLOUD/image/upload/v123/folder/filename.ext
     const match = url.match(/\/upload\/(?:v\d+\/)?(.+)\.[a-z]+$/i)
     return match ? match[1] : null
   } catch {
@@ -17,7 +16,7 @@ function extractCloudinaryPublicId(url) {
   }
 }
 
-// POST /api/orders — Créer une commande ET décrémenter le stock immédiatement
+// POST /api/orders — Créer une commande
 router.post('/', async (req, res) => {
   try {
     const { customerInfo, items, total, metaEventId } = req.body
@@ -41,8 +40,7 @@ router.post('/', async (req, res) => {
     const order = new Order({ customerInfo, items, total, status: 'en attente' })
     await order.save()
 
-    // ── Meta CAPI : Purchase (fire-and-forget, ne bloque pas la réponse) ──
-    // metaEventId est généré côté Pixel dans le frontend — même ID = déduplication
+    // ── Meta CAPI : Purchase (fire-and-forget) ──
     setImmediate(async () => {
       try {
         const ip = (
@@ -65,6 +63,7 @@ router.post('/', async (req, res) => {
             userAgent: req.headers['user-agent'],
           },
           customData: {
+            order_id:     order._id.toString(),   // ← lien commande ↔ conversion Meta
             content_ids:  items.map(i => String(i.product)),
             content_type: 'product',
             num_items:    items.reduce((s, i) => s + i.quantity, 0),
@@ -120,8 +119,39 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
+    const previousStatus = order.status
     order.status = status
     await order.save()
+
+    // ── Meta CAPI : DeliveredOrder ──
+    if (status === 'livré' && previousStatus !== 'livré') {
+      setImmediate(async () => {
+        try {
+          await sendMetaEvent('DeliveredOrder', {
+            eventId:   `delivered-${order._id}`,
+            sourceUrl: '',
+            userData: {
+              phone:     order.customerInfo?.phone,
+              firstName: order.customerInfo?.firstName,
+              lastName:  order.customerInfo?.lastName,
+              wilaya:    order.customerInfo?.wilaya,
+              commune:   order.customerInfo?.commune,
+            },
+            customData: {
+              order_id:     order._id.toString(),  // ← lien commande ↔ livraison Meta
+              content_ids:  order.items.map(i => String(i.product)),
+              content_type: 'product',
+              num_items:    order.items.reduce((s, i) => s + i.quantity, 0),
+              value:        order.total,
+              currency:     'DZD',
+            },
+          })
+        } catch (err) {
+          console.error('Meta CAPI DeliveredOrder error:', err.message)
+        }
+      })
+    }
+
     res.json(order)
 
   } catch (err) {
@@ -135,7 +165,6 @@ router.delete('/:id', authenticateAdmin, async (req, res) => {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
-    // Supprimer les logos client sur Cloudinary
     const logoUrls = order.customerInfo?.logoUrls || []
     if (logoUrls.length > 0) {
       const deletePromises = logoUrls.map(url => {

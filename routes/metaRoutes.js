@@ -3,29 +3,36 @@
  *
  * Route : POST /api/meta/event
  *
- * Reçoit les événements PageView, ViewContent, AddToCart, InitiateCheckout
- * depuis le frontend et les relaie à Meta CAPI avec :
+ * Reçoit les événements PageView, ViewContent, AddToCart, InitiateCheckout,
+ * Lead, AddPaymentInfo depuis le frontend et les relaie à Meta CAPI avec :
  *   - l'IP réelle du visiteur (depuis les headers serveur)
  *   - le User-Agent navigateur
+ *   - les cookies fbp / fbc (matching cross-device)
  *   - les données e-commerce
  *
  * Note : Purchase est géré directement dans orderRoutes.js
  * pour avoir accès aux données utilisateur complètes (phone, nom…).
+ *
+ * CHANGELOG :
+ *  ✅ NEW — Extraction et transmission des cookies fbp / fbc
+ *  ✅ NEW — Événements Lead et AddPaymentInfo ajoutés à la liste autorisée
+ *  ✅ FIX — Transmission du tableau contents à sendMetaEvent
  */
 
 const express        = require('express')
 const router         = express.Router()
 const { sendMetaEvent } = require('../utils/metaCAPI')
 
-// Événements autorisés (on n'accepte pas Purchase ici — géré par orderRoutes)
-const ALLOWED_EVENTS = ['PageView', 'ViewContent', 'AddToCart', 'InitiateCheckout']
+// Événements autorisés (Purchase géré par orderRoutes)
+const ALLOWED_EVENTS = ['PageView', 'ViewContent', 'AddToCart', 'InitiateCheckout', 'Lead', 'AddPaymentInfo']
 
 /**
  * POST /api/meta/event
  * Body : {
  *   event_name, event_id, event_source_url,
- *   user_agent, content_ids, content_name,
- *   content_type, value, currency, num_items
+ *   user_agent, fbp, fbc,
+ *   content_ids, content_name, content_type,
+ *   value, currency, num_items, contents
  * }
  */
 router.post('/event', async (req, res) => {
@@ -38,12 +45,15 @@ router.post('/event', async (req, res) => {
       event_id,
       event_source_url,
       user_agent,
+      fbp,
+      fbc,
       content_ids,
       content_name,
       content_type,
       value,
       currency,
       num_items,
+      contents,
     } = req.body
 
     // Validation de base
@@ -64,7 +74,9 @@ router.post('/event', async (req, res) => {
       userData: {
         ip,
         userAgent: user_agent || req.headers['user-agent'],
-        // Pas de données utilisateur pour ces événements (pas encore de formulaire)
+        // Cookies Meta pour le matching cross-device
+        ...(fbp && { fbp }),
+        ...(fbc && { fbc }),
       },
       customData: {
         ...(content_ids   && { content_ids }),
@@ -73,6 +85,7 @@ router.post('/event', async (req, res) => {
         ...(value   != null && { value }),
         ...(currency       && { currency }),
         ...(num_items != null && { num_items }),
+        ...(contents       && { contents }),
       },
     })
   } catch (err) {

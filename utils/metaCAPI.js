@@ -8,6 +8,11 @@
  * Variables d'environnement requises (.env) :
  *   META_PIXEL_ID       → ID du Pixel Meta
  *   META_ACCESS_TOKEN   → Token d'accès CAPI (System User Access Token)
+ *
+ * CHANGELOG :
+ *  ✅ FIX  — Mapping géographique Algérie corrigé : st=wilaya (state/province), ct=commune (city)
+ *            L'ancien mapping (ct=wilaya, zp=commune) était incorrect pour Meta
+ *  ✅ NEW  — Champs fbp / fbc (cookies Meta) ajoutés au buildUserData pour meilleur matching
  */
 
 const https  = require('https')
@@ -45,21 +50,31 @@ function normalizePhone(phone) {
 
 /* ─────────────────────────────────────────────
    Construit l'objet user_data avec tous les
-   champs hashés disponibles
+   champs hashés disponibles.
+
+   Mapping géographique Algérie (CORRIGÉ) :
+   - st (state)  = wilaya   ← province / région
+   - ct (city)   = commune  ← ville
+   Note : zp (zip code) supprimé — pas de code
+   postal standardisé en Algérie.
 ───────────────────────────────────────────────*/
-function buildUserData({ phone, firstName, lastName, wilaya, commune, ip, userAgent } = {}) {
+function buildUserData({ phone, firstName, lastName, wilaya, commune, ip, userAgent, fbp, fbc } = {}) {
   const userData = {}
 
   if (phone)      userData.ph  = sha256(normalizePhone(phone))
   if (firstName)  userData.fn  = sha256(firstName)
   if (lastName)   userData.ln  = sha256(lastName)
-  if (wilaya)     userData.ct  = sha256(wilaya)   // city
-  if (commune)    userData.zp  = sha256(commune)  // zip / commune
+  if (wilaya)     userData.st  = sha256(wilaya)   // st = state/province → wilaya ✓
+  if (commune)    userData.ct  = sha256(commune)  // ct = city → commune ✓
   userData.country             = sha256('dz')     // Algérie toujours
 
   // Non hashés (Meta les accepte en clair pour ces champs)
   if (ip)         userData.client_ip_address  = ip
   if (userAgent)  userData.client_user_agent  = userAgent
+
+  // Cookies Meta — non hashés, améliorent le matching cross-device
+  if (fbp)        userData.fbp = fbp
+  if (fbc)        userData.fbc = fbc
 
   return userData
 }
@@ -121,7 +136,7 @@ function postToMeta(payload) {
 ════════════════════════════════════════════ */
 
 /**
- * @param {string} eventName   - 'PageView' | 'ViewContent' | 'AddToCart' | 'InitiateCheckout' | 'Purchase'
+ * @param {string} eventName   - 'PageView' | 'ViewContent' | 'AddToCart' | 'InitiateCheckout' | 'Lead' | 'AddPaymentInfo' | 'Purchase' | 'DeliveredOrder'
  * @param {object} options
  * @param {string} options.eventId          - event_id unique (déduplication avec Pixel)
  * @param {string} options.sourceUrl        - URL de la page
