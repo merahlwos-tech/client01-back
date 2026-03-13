@@ -17,6 +17,7 @@ const productSchema = new mongoose.Schema(
     images: { type: [String],    default: [] },
 
     colors:           { type: [String], default: [] },
+    numberOfColors:   { type: Number,   default: null },   // nb de couleurs max dans le design
     doubleSided:      { type: Boolean,  default: false },
     doubleSidedPrice: { type: Number,   default: 0, min: 0 },
     tags:             { type: [String], default: [] },

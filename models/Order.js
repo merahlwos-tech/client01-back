@@ -1,12 +1,14 @@
 const mongoose = require('mongoose')
 
 const orderItemSchema = new mongoose.Schema({
-  product:     { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
-  name:        { type: String, required: true },
-  size:        { type: String },
-  doubleSided: { type: Boolean, default: false },
-  quantity:    { type: Number, required: true },
-  price:       { type: Number, required: true },
+  product:        { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+  name:           { type: String, required: true },
+  size:           { type: String },
+  doubleSided:    { type: Boolean, default: false },
+  selectedColors: { type: [String], default: [] },   // couleurs choisies par le client
+  numberOfColors: { type: Number,   default: null },  // nb de couleurs dans le design
+  quantity:       { type: Number, required: true },
+  price:          { type: Number, required: true },
 })
 
 const customerInfoSchema = new mongoose.Schema({
