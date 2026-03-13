@@ -16,9 +16,11 @@ const productSchema = new mongoose.Schema(
     sizes:  { type: [sizeSchema], default: [] },
     images: { type: [String],    default: [] },
 
-    colors:           { type: [String], default: [] },
-    numberOfColors:   { type: Number,   default: null },   // nb de couleurs max dans le design
-    doubleSided:      { type: Boolean,  default: false },
+    colors:                 { type: [String], default: [] },
+    colorDesignEnabled:     { type: Boolean, default: false },   // option "couleurs dans le design" activée
+    colorDesignPricePerColor: { type: Number, default: 0 },      // prix DA par couleur ajoutée
+    colorDesignMaxColors:   { type: Number, default: null },      // limite max (optionnel)
+    doubleSided:            { type: Boolean, default: false },
     doubleSidedPrice: { type: Number,   default: 0, min: 0 },
     tags:             { type: [String], default: [] },
   },
