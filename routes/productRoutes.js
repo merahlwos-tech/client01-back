@@ -4,28 +4,17 @@ const Product  = require('../models/Product')
 const { authenticateAdmin } = require('../middleware/auth')
 const { deleteProductImageFromR2 } = require('../utils/uploadR2')
 
-// ─────────────────────────────────────────────
-// GET tous les produits (public)
-// .lean() → retourne des objets JS purs (pas d'instances Mongoose)
-//           → 2× plus rapide en lecture, moins de mémoire
-// ─────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
     const { category } = req.query
     const filter   = category ? { category } : {}
-    const products = await Product
-      .find(filter)
-      .sort({ createdAt: -1 })
-      .lean()            // ← optimisation lecture
+    const products = await Product.find(filter).sort({ createdAt: -1 }).lean()
     res.json(products)
   } catch (error) {
     res.status(500).json({ message: error.message })
   }
 })
 
-// ─────────────────────────────────────────────
-// GET un produit par ID (public)
-// ─────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
     const product = await Product.findById(req.params.id).lean()
@@ -36,16 +25,14 @@ router.get('/:id', async (req, res) => {
   }
 })
 
-// ─────────────────────────────────────────────
-// POST créer un produit (admin)
-// ─────────────────────────────────────────────
 router.post('/', authenticateAdmin, async (req, res) => {
   try {
     const body = { ...req.body }
-    if (typeof body.sizes === 'string')       body.sizes       = JSON.parse(body.sizes)
-    if (typeof body.colors === 'string')      body.colors      = JSON.parse(body.colors)
-    if (typeof body.tags === 'string')        body.tags        = JSON.parse(body.tags)
-    if (typeof body.doubleSided === 'string') body.doubleSided = body.doubleSided === 'true'
+    if (typeof body.sizes === 'string')              body.sizes              = JSON.parse(body.sizes)
+    if (typeof body.colors === 'string')             body.colors             = JSON.parse(body.colors)
+    if (typeof body.tags === 'string')               body.tags               = JSON.parse(body.tags)
+    if (typeof body.doubleSided === 'string')        body.doubleSided        = body.doubleSided === 'true'
+    if (typeof body.colorDesignEnabled === 'string') body.colorDesignEnabled = body.colorDesignEnabled === 'true'
     if (body.images && !Array.isArray(body.images)) body.images = [body.images]
     if (!body.images) body.images = []
 
@@ -57,21 +44,19 @@ router.post('/', authenticateAdmin, async (req, res) => {
   }
 })
 
-// ─────────────────────────────────────────────
-// PUT modifier un produit (admin)
-// ─────────────────────────────────────────────
 router.put('/:id', authenticateAdmin, async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
     if (!product) return res.status(404).json({ message: 'Produit non trouvé' })
 
     const body = { ...req.body }
-    if (typeof body.sizes === 'string')       body.sizes       = JSON.parse(body.sizes)
-    if (typeof body.colors === 'string')      body.colors      = JSON.parse(body.colors)
-    if (typeof body.tags === 'string')        body.tags        = JSON.parse(body.tags)
-    if (typeof body.doubleSided === 'string') body.doubleSided = body.doubleSided === 'true'
+    if (typeof body.sizes === 'string')              body.sizes              = JSON.parse(body.sizes)
+    if (typeof body.colors === 'string')             body.colors             = JSON.parse(body.colors)
+    if (typeof body.tags === 'string')               body.tags               = JSON.parse(body.tags)
+    if (typeof body.doubleSided === 'string')        body.doubleSided        = body.doubleSided === 'true'
+    if (typeof body.colorDesignEnabled === 'string') body.colorDesignEnabled = body.colorDesignEnabled === 'true'
     if (body.images && !Array.isArray(body.images)) body.images = [body.images]
-    if (!body.images || body.images.length === 0) body.images = product.images
+    if (!body.images || body.images.length === 0)   body.images = product.images
 
     const updated = await Product.findByIdAndUpdate(
       req.params.id, body,
@@ -83,9 +68,6 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
   }
 })
 
-// ─────────────────────────────────────────────
-// DELETE supprimer un produit + images R2 (admin)
-// ─────────────────────────────────────────────
 router.delete('/:id', authenticateAdmin, async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
