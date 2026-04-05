@@ -1,13 +1,35 @@
 const express  = require('express')
 const router   = express.Router()
 const Product  = require('../models/Product')
+const Settings = require('../models/Settings')
 const { authenticateAdmin } = require('../middleware/auth')
 const { deleteProductImageFromR2 } = require('../utils/uploadR2')
 
+/* ─────────────────────────────────────────────────────────────
+   GET /products  — route publique
+   Filtre automatiquement les catégories cachées par l'admin
+   ─────────────────────────────────────────────────────────── */
 router.get('/', async (req, res) => {
   try {
     const { category } = req.query
-    const filter   = category ? { category } : {}
+
+    // Récupère les catégories cachées
+    const hiddenSetting = await Settings.findOne({ key: 'hiddenCategories' }).lean()
+    const hidden = hiddenSetting?.value || []
+
+    const filter = {}
+
+    if (category) {
+      // Si la catégorie demandée est cachée → liste vide
+      if (hidden.includes(category)) return res.json([])
+      filter.category = category
+    } else {
+      // Exclut toutes les catégories cachées
+      if (hidden.length > 0) {
+        filter.category = { $nin: hidden }
+      }
+    }
+
     const products = await Product.find(filter).sort({ createdAt: -1 }).lean()
     res.json(products)
   } catch (error) {
@@ -15,6 +37,9 @@ router.get('/', async (req, res) => {
   }
 })
 
+/* ─────────────────────────────────────────────────────────────
+   GET /products/:id
+   ─────────────────────────────────────────────────────────── */
 router.get('/:id', async (req, res) => {
   try {
     const product = await Product.findById(req.params.id).lean()
@@ -25,6 +50,9 @@ router.get('/:id', async (req, res) => {
   }
 })
 
+/* ─────────────────────────────────────────────────────────────
+   POST /products  — admin seulement
+   ─────────────────────────────────────────────────────────── */
 router.post('/', authenticateAdmin, async (req, res) => {
   try {
     const body = { ...req.body }
@@ -44,6 +72,9 @@ router.post('/', authenticateAdmin, async (req, res) => {
   }
 })
 
+/* ─────────────────────────────────────────────────────────────
+   PUT /products/:id  — admin seulement
+   ─────────────────────────────────────────────────────────── */
 router.put('/:id', authenticateAdmin, async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
@@ -68,6 +99,9 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
   }
 })
 
+/* ─────────────────────────────────────────────────────────────
+   DELETE /products/:id  — admin seulement
+   ─────────────────────────────────────────────────────────── */
 router.delete('/:id', authenticateAdmin, async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
