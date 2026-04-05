@@ -56,6 +56,7 @@ const orderLimit = rateLimit({
 /* ══════════════════════════════════════════════
    ROUTES
 ══════════════════════════════════════════════ */
+app.use('/api/settings', generalLimit, require('./routes/settingsRoutes'))
 app.use('/api/products', generalLimit, require('./routes/productRoutes'))
 app.use('/api/orders',   orderLimit,   require('./routes/orderRoutes'))
 app.use('/api/auth',     generalLimit, require('./routes/authRoutes'))
