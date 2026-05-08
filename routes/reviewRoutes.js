@@ -143,7 +143,7 @@ router.get('/', async (req, res) => {
    ─────────────────────────────────────────────────────────── */
 router.post('/', authenticateAdmin, async (req, res) => {
   try {
-    const { imageBase64, category = 'general' } = req.body
+    const { imageBase64, category = 'Board' } = req.body
 
     if (!imageBase64) {
       return res.status(400).json({ message: 'imageBase64 requis' })
