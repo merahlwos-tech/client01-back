@@ -3,6 +3,15 @@ const mongoose = require('mongoose')
 const sizeSchema = new mongoose.Schema({
   size:  { type: String, required: true },
   price: { type: Number, required: true, min: 0 },
+  // Paliers de quantité : [{ qty: 200, price: 12 }, { qty: 500, price: 10 }]
+  // Si vide → le prix de base s'applique à toutes les quantités
+  priceTiers: {
+    type: [{
+      qty:   { type: Number, required: true },
+      price: { type: Number, required: true, min: 0 },
+    }],
+    default: [],
+  },
 })
 
 const productSchema = new mongoose.Schema(
