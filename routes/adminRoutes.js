@@ -230,4 +230,37 @@ router.post('/signaler', authenticateAdmin, async (req, res) => {
   }
 })
 
+/* ─────────────────────────────────────────────────────────────
+   TAGS SUR COMMANDES
+   ─────────────────────────────────────────────────────────── */
+
+/* GET /api/admin/tags — liste tous les tags distincts utilisés */
+router.get('/tags', authenticateAdmin, async (req, res) => {
+  try {
+    const tags = await Order.distinct('tags')
+    res.json(tags.filter(Boolean).sort())
+  } catch (error) {
+    res.status(500).json({ message: error.message })
+  }
+})
+
+/* PATCH /api/admin/orders/:id/tags — ajoute/retire des tags d'une commande
+   body: { tags: ['urgent', 'logo envoyé'] }
+*/
+router.patch('/orders/:id/tags', authenticateAdmin, async (req, res) => {
+  try {
+    const { tags } = req.body
+    if (!Array.isArray(tags)) return res.status(400).json({ message: 'tags doit être un tableau' })
+    const order = await Order.findByIdAndUpdate(
+      req.params.id,
+      { tags: [...new Set(tags.map(t => t.trim()).filter(Boolean))] },
+      { new: true }
+    )
+    if (!order) return res.status(404).json({ message: 'Commande non trouvée' })
+    res.json({ tags: order.tags })
+  } catch (error) {
+    res.status(500).json({ message: error.message })
+  }
+})
+
 module.exports = router
