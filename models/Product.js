@@ -3,15 +3,6 @@ const mongoose = require('mongoose')
 const sizeSchema = new mongoose.Schema({
   size:  { type: String, required: true },
   price: { type: Number, required: true, min: 0 },
-  // Paliers de quantité : [{ qty: 200, price: 12 }, { qty: 500, price: 10 }]
-  // Si vide → le prix de base s'applique à toutes les quantités
-  priceTiers: {
-    type: [{
-      qty:   { type: Number, required: true },
-      price: { type: Number, required: true, min: 0 },
-    }],
-    default: [],
-  },
 })
 
 const productSchema = new mongoose.Schema(
@@ -22,6 +13,7 @@ const productSchema = new mongoose.Schema(
       required: true,
       enum: ['Board', 'Bags', 'Autocollants', 'Paper'],
     },
+    position: { type: Number, default: 9999 },   // ordre dans la catégorie (plus petit = premier)
     sizes:  { type: [sizeSchema], default: [] },
     images: { type: [String],    default: [] },
 
@@ -38,6 +30,7 @@ const productSchema = new mongoose.Schema(
 
 // ── Index ──────────────────────────────────────────────────────────────────
 // Accélère les requêtes GET /products?category=X (très fréquentes)
+productSchema.index({ category: 1, position: 1 })
 productSchema.index({ category: 1, createdAt: -1 })
 // Accélère la recherche par nom dans l'admin
 productSchema.index({ name: 'text' })
