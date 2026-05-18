@@ -33,12 +33,14 @@ const orderSchema = new mongoose.Schema({
     enum:    ['en attente', 'confirmé', 'annulé'],
     default: 'en attente',
   },
-  ecotrackTracking:  { type: String, default: null },  // numéro de tracking Ecotrack
-  ecotrackSentAt:    { type: Date,   default: null },   // date d'envoi
+  ecotrackTracking:  { type: String,   default: null },
+  ecotrackSentAt:    { type: Date,     default: null },
+  tags:              { type: [String], default: [] },
 }, { timestamps: true })
 
 orderSchema.index({ createdAt: -1 })
 orderSchema.index({ status: 1 })
 orderSchema.index({ status: 1, total: 1 })
+orderSchema.index({ tags: 1 })
 
 module.exports = mongoose.model('Order', orderSchema)
