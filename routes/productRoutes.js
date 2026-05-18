@@ -30,7 +30,7 @@ router.get('/', async (req, res) => {
       }
     }
 
-    const products = await Product.find(filter).sort({ createdAt: -1 }).lean()
+    const products = await Product.find(filter).sort({ position: 1, createdAt: 1 }).lean()
     res.json(products)
   } catch (error) {
     res.status(500).json({ message: error.message })
@@ -112,6 +112,25 @@ router.delete('/:id', authenticateAdmin, async (req, res) => {
     }
     await Product.findByIdAndDelete(req.params.id)
     res.json({ message: 'Produit et images supprimés' })
+  } catch (error) {
+    res.status(500).json({ message: error.message })
+  }
+})
+
+/* ─────────────────────────────────────────────────────────────
+   PUT /products/reorder  — admin seulement
+   body: [{ id: '...', position: 0 }, { id: '...', position: 1 }, ...]
+   ─────────────────────────────────────────────────────────── */
+router.put('/reorder', authenticateAdmin, async (req, res) => {
+  try {
+    const items = req.body
+    if (!Array.isArray(items)) return res.status(400).json({ message: 'Array requis' })
+    await Promise.all(
+      items.map(({ id, position }) =>
+        Product.findByIdAndUpdate(id, { position: Number(position) })
+      )
+    )
+    res.json({ message: 'Ordre mis à jour' })
   } catch (error) {
     res.status(500).json({ message: error.message })
   }
