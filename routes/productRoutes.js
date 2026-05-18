@@ -38,6 +38,26 @@ router.get('/', async (req, res) => {
 })
 
 /* ─────────────────────────────────────────────────────────────
+   PUT /products/reorder  — admin seulement
+   DOIT être avant /:id pour ne pas être capté par Express comme id
+   body: [{ id: '...', position: 0 }, { id: '...', position: 1 }, ...]
+   ─────────────────────────────────────────────────────────── */
+router.put('/reorder', authenticateAdmin, async (req, res) => {
+  try {
+    const items = req.body
+    if (!Array.isArray(items)) return res.status(400).json({ message: 'Array requis' })
+    await Promise.all(
+      items.map(({ id, position }) =>
+        Product.findByIdAndUpdate(id, { position: Number(position) })
+      )
+    )
+    res.json({ message: 'Ordre mis à jour' })
+  } catch (error) {
+    res.status(500).json({ message: error.message })
+  }
+})
+
+/* ─────────────────────────────────────────────────────────────
    GET /products/:id
    ─────────────────────────────────────────────────────────── */
 router.get('/:id', async (req, res) => {
@@ -112,25 +132,6 @@ router.delete('/:id', authenticateAdmin, async (req, res) => {
     }
     await Product.findByIdAndDelete(req.params.id)
     res.json({ message: 'Produit et images supprimés' })
-  } catch (error) {
-    res.status(500).json({ message: error.message })
-  }
-})
-
-/* ─────────────────────────────────────────────────────────────
-   PUT /products/reorder  — admin seulement
-   body: [{ id: '...', position: 0 }, { id: '...', position: 1 }, ...]
-   ─────────────────────────────────────────────────────────── */
-router.put('/reorder', authenticateAdmin, async (req, res) => {
-  try {
-    const items = req.body
-    if (!Array.isArray(items)) return res.status(400).json({ message: 'Array requis' })
-    await Promise.all(
-      items.map(({ id, position }) =>
-        Product.findByIdAndUpdate(id, { position: Number(position) })
-      )
-    )
-    res.json({ message: 'Ordre mis à jour' })
   } catch (error) {
     res.status(500).json({ message: error.message })
   }
