@@ -109,10 +109,24 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     if (body.images && !Array.isArray(body.images)) body.images = [body.images]
     if (!body.images || body.images.length === 0)   body.images = product.images
 
-    const updated = await Product.findByIdAndUpdate(
-      req.params.id, body,
-      { new: true, runValidators: true }
-    )
+    // S'assurer que chaque taille a bien son tableau priceTiers
+    if (Array.isArray(body.sizes)) {
+      body.sizes = body.sizes.map(s => ({
+        ...s,
+        price:      Number(s.price) || 0,
+        priceTiers: Array.isArray(s.priceTiers)
+          ? s.priceTiers
+              .filter(t => t.qty !== '' && t.price !== '' && t.qty != null)
+              .map(t => ({ qty: Number(t.qty), price: Number(t.price) }))
+              .sort((a, b) => a.qty - b.qty)
+          : [],
+      }))
+    }
+
+    // Utiliser .set() + .save() au lieu de findByIdAndUpdate
+    // pour que Mongoose gère correctement les sous-documents imbriqués
+    product.set(body)
+    const updated = await product.save()
     res.json(updated)
   } catch (error) {
     res.status(400).json({ message: error.message })
