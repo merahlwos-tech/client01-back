@@ -109,9 +109,9 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     if (body.images && !Array.isArray(body.images)) body.images = [body.images]
     if (!body.images || body.images.length === 0)   body.images = product.images
 
-    // Forcer la reconstruction complète des sizes avec priceTiers
+    // Reconstruire sizes proprement avec priceTiers
     if (Array.isArray(body.sizes)) {
-      body.sizes = body.sizes.map(s => ({
+      const newSizes = body.sizes.map(s => ({
         size:  String(s.size || ''),
         price: Number(s.price) || 0,
         priceTiers: Array.isArray(s.priceTiers)
@@ -121,13 +121,18 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
               .sort((a, b) => a.qty - b.qty)
           : [],
       }))
+      // Remplacer le tableau entier — markModified est OBLIGATOIRE
+      // pour que Mongoose détecte les changements dans les sous-documents imbriqués
+      product.sizes = newSizes
+      product.markModified('sizes')
     }
 
-    // Vider le tableau sizes existant puis le remplacer (évite les conflits Mongoose)
-    product.sizes = []
-    await product.save()
+    // Appliquer les autres champs
+    const { sizes: _, ...rest } = body
+    Object.keys(rest).forEach(key => {
+      product[key] = rest[key]
+    })
 
-    product.set(body)
     const updated = await product.save()
     res.json(updated)
   } catch (error) {
