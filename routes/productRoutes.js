@@ -97,8 +97,8 @@ router.post('/', authenticateAdmin, async (req, res) => {
    ─────────────────────────────────────────────────────────── */
 router.put('/:id', authenticateAdmin, async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id)
-    if (!product) return res.status(404).json({ message: 'Produit non trouvé' })
+    const existing = await Product.findById(req.params.id).lean()
+    if (!existing) return res.status(404).json({ message: 'Produit non trouvé' })
 
     const body = { ...req.body }
     if (typeof body.sizes === 'string')              body.sizes              = JSON.parse(body.sizes)
@@ -107,33 +107,46 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     if (typeof body.doubleSided === 'string')        body.doubleSided        = body.doubleSided === 'true'
     if (typeof body.colorDesignEnabled === 'string') body.colorDesignEnabled = body.colorDesignEnabled === 'true'
     if (body.images && !Array.isArray(body.images)) body.images = [body.images]
-    if (!body.images || body.images.length === 0)   body.images = product.images
+    if (!body.images || body.images.length === 0)   body.images = existing.images
 
-    // Reconstruire sizes proprement avec priceTiers
-    if (Array.isArray(body.sizes)) {
-      const newSizes = body.sizes.map(s => ({
-        size:  String(s.size || ''),
-        price: Number(s.price) || 0,
-        priceTiers: Array.isArray(s.priceTiers)
-          ? s.priceTiers
-              .filter(t => t.qty != null && t.price != null && t.qty !== '' && t.price !== '')
-              .map(t => ({ qty: Number(t.qty), price: Number(t.price) }))
-              .sort((a, b) => a.qty - b.qty)
-          : [],
-      }))
-      // Remplacer le tableau entier — markModified est OBLIGATOIRE
-      // pour que Mongoose détecte les changements dans les sous-documents imbriqués
-      product.sizes = newSizes
-      product.markModified('sizes')
+    // Construire les sizes avec priceTiers proprement castés
+    const newSizes = Array.isArray(body.sizes)
+      ? body.sizes.map(s => ({
+          size:  String(s.size || ''),
+          price: Number(s.price) || 0,
+          priceTiers: Array.isArray(s.priceTiers)
+            ? s.priceTiers
+                .filter(t => t.qty != null && t.price != null && String(t.qty) !== '' && String(t.price) !== '')
+                .map(t => ({ qty: Number(t.qty), price: Number(t.price) }))
+                .sort((a, b) => a.qty - b.qty)
+            : [],
+        }))
+      : existing.sizes
+
+    // $set direct sur MongoDB — bypass total du change tracking Mongoose
+    const updateDoc = {
+      $set: {
+        name:                    body.name     ?? existing.name,
+        category:                body.category ?? existing.category,
+        position:                body.position !== undefined ? Number(body.position) : existing.position,
+        sizes:                   newSizes,
+        colors:                  body.colors   ?? existing.colors,
+        images:                  body.images,
+        doubleSided:             body.doubleSided,
+        doubleSidedPrice:        body.doubleSided ? (Number(body.doubleSidedPrice) || 0) : 0,
+        colorDesignEnabled:      body.colorDesignEnabled,
+        colorDesignPricePerColor: body.colorDesignEnabled ? (Number(body.colorDesignPricePerColor) || 0) : 0,
+        colorDesignMaxColors:    body.colorDesignEnabled ? (Number(body.colorDesignMaxColors) || null) : null,
+        updatedAt:               new Date(),
+      }
     }
 
-    // Appliquer les autres champs
-    const { sizes: _, ...rest } = body
-    Object.keys(rest).forEach(key => {
-      product[key] = rest[key]
-    })
+    await Product.collection.updateOne(
+      { _id: existing._id },
+      updateDoc
+    )
 
-    const updated = await product.save()
+    const updated = await Product.findById(req.params.id).lean()
     res.json(updated)
   } catch (error) {
     res.status(400).json({ message: error.message })
