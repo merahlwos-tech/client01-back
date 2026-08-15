@@ -64,6 +64,11 @@ app.use('/api/admin',    generalLimit, require('./routes/adminRoutes'))
 app.use('/api/meta',     generalLimit, require('./routes/metaRoutes'))
 app.use('/api/ecotrack', generalLimit, require('./routes/ecotrackRoutes'))
 
+// ── Plateforme interne (atelier) ──────────────────────────────────────────
+app.use('/api/users',    generalLimit, require('./routes/userRoutes'))     // comptes staff (superadmin)
+app.use('/api/stock',    generalLimit, require('./routes/stockRoutes'))    // matières premières
+app.use('/api/workflow', generalLimit, require('./routes/workflowRoutes')) // pipeline commandes
+
 /* ══════════════════════════════════════════════
    MONGODB
 ══════════════════════════════════════════════ */

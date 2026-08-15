@@ -5,62 +5,13 @@ const Product    = require('../models/Product')
 const cloudinary = require('../config/cloudinary')
 const { authenticateAdmin } = require('../middleware/auth')
 const { sendMetaEvent }     = require('../utils/metaCAPI')
-
-const ECOTRACK_BASE  = process.env.ECOTRACK_BASE_URL  || 'https://ecotrack.dz'
-const ECOTRACK_TOKEN = process.env.ECOTRACK_API_TOKEN || ''
-const ecoHeaders = () => ({
-  'Content-Type': 'application/json',
-  ...(ECOTRACK_TOKEN ? { Authorization: `Bearer ${ECOTRACK_TOKEN}` } : {}),
-})
+const { sendToEcotrack }    = require('../utils/ecotrack')
 
 function extractCloudinaryPublicId(url) {
   try {
     const match = url.match(/\/upload\/(?:v\d+\/)?(.+)\.[a-z]+$/i)
     return match ? match[1] : null
   } catch { return null }
-}
-
-// ── Envoi à Ecotrack (interne) ───────────────────────────────────────────────
-async function sendToEcotrack(order) {
-  if (order.ecotrackTracking) return { alreadySent: true, tracking: order.ecotrackTracking }
-
-  const { customerInfo, total, items } = order
-  const wilayaCode = customerInfo.wilayaCode
-
-  if (!wilayaCode) {
-    console.warn(`[ECOTRACK] Order ${order._id}: wilayaCode manquant, envoi ignoré`)
-    return { error: 'wilayaCode manquant' }
-  }
-
-  const produitLabel = items.map(i => `${i.name} x${i.quantity}`).join(', ').slice(0, 255)
-
-  const params = new URLSearchParams({
-    reference:   order._id.toString().slice(-8).toUpperCase(),
-    nom_client:  `${customerInfo.firstName} ${customerInfo.lastName}`,
-    telephone:   customerInfo.phone.replace(/\s/g, ''),
-    adresse:     customerInfo.commune,
-    commune:     customerInfo.commune,
-    code_wilaya: String(wilayaCode),
-    montant:     String(total),
-    type:        '1',
-    stop_desk:   customerInfo.deliveryMethod === 'Stop Desk' ? '1' : '0',
-    produit:     produitLabel,
-  })
-
-  const resp = await fetch(`${ECOTRACK_BASE}/api/v1/create/order?${params.toString()}`, {
-    method: 'POST',
-    headers: ecoHeaders(),
-  })
-  const data = await resp.json()
-
-  if (!data.success) {
-    console.error('[ECOTRACK] Erreur envoi commande:', data)
-    return { error: data.message || 'Erreur Ecotrack', details: data.errors }
-  }
-
-  order.ecotrackTracking = data.tracking
-  order.ecotrackSentAt   = new Date()
-  return { tracking: data.tracking }
 }
 
 // ─── POST /api/orders ────────────────────────────────────────────────────────
