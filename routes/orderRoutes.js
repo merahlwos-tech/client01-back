@@ -17,7 +17,7 @@ function extractCloudinaryPublicId(url) {
 // ─── POST /api/orders ────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { customerInfo, items, total, metaEventId } = req.body
+    const { customerInfo, items, total, metaEventId, metaFbp, metaFbc } = req.body
     if (!customerInfo || !items || !total) {
       return res.status(400).json({ message: 'Données incomplètes' })
     }
@@ -48,6 +48,8 @@ router.post('/', async (req, res) => {
             phone: customerInfo.phone, firstName: customerInfo.firstName,
             lastName: customerInfo.lastName, wilaya: customerInfo.wilaya,
             commune: customerInfo.commune, ip, userAgent: req.headers['user-agent'],
+            ...(metaFbp && { fbp: metaFbp }),
+            ...(metaFbc && { fbc: metaFbc }),
           },
           customData: {
             order_id: order._id.toString(),
