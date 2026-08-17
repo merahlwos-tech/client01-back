@@ -15,8 +15,11 @@ const jwt = require('jsonwebtoken');
    ═══════════════════════════════════════════════════════════════════════════ */
 const OPEN_ACCESS = process.env.STAFF_OPEN_ACCESS !== 'false';
 
-// Identité attribuée aux visiteurs quand l'accès est libre
-const GUEST_USER = { username: 'acces-libre', role: 'superadmin' };
+// Identité attribuée aux visiteurs quand l'accès est libre.
+// `openAccess: true` permet de distinguer ce visiteur d'un vrai superadmin :
+// il obtient l'ACCÈS aux pages, mais pas le droit de passer outre les
+// garde-fous métier (modifier une commande déjà fabriquée, sauter une étape…).
+const GUEST_USER = { username: 'acces-libre', role: 'superadmin', openAccess: true };
 
 if (OPEN_ACCESS) {
   console.warn('⚠️  ATELIER EN ACCÈS LIBRE — aucune authentification requise sur /api/workflow, /api/stock, /api/users');

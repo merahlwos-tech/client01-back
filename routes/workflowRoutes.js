@@ -8,6 +8,12 @@ const StockMovement = require('../models/StockMovement')
 const { sendToEcotrack } = require('../utils/ecotrack')
 const { authenticateUser, authorize, isSuperadmin } = require('../middleware/auth')
 
+// Un vrai superadmin peut passer outre les garde-fous metier (sauter une
+// etape, modifier une commande deja fabriquee). Le visiteur de l'acces libre,
+// lui, obtient l'acces aux pages mais PAS ce droit d'override.
+const canOverride = (req) => isSuperadmin(req.user?.role) && !req.user?.openAccess
+
+
 router.use(authenticateUser)
 
 // Qui AGIT sur chaque étape (peut la faire avancer)
@@ -47,7 +53,7 @@ const pushHistory = (order, stage, req, note = '') => {
 // Garde de transition : l'acteur doit correspondre à l'étape courante
 // (le superadmin peut agir quelle que soit l'étape).
 const guardStage = (order, expectedStage, req, res) => {
-  if (isSuperadmin(req.user?.role)) return true
+  if (canOverride(req)) return true
   if (order.pipeline.stage !== expectedStage) {
     res.status(409).json({ message: `Commande déjà à l'étape « ${order.pipeline.stage} »` })
     return false
@@ -280,7 +286,7 @@ router.post('/orders/:id/send-production', authorize('designer'), async (req, re
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
     if (!guardStage(order, 'design', req, res)) return
 
-    if (!order.pipeline.designValidated && !isSuperadmin(req.user?.role)) {
+    if (!order.pipeline.designValidated && !canOverride(req)) {
       return res.status(409).json({ message: 'Validez d\'abord le design avant de l\'envoyer' })
     }
 
@@ -314,7 +320,7 @@ router.patch('/orders/:id/production-day', authorize('designer'), async (req, re
 
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
-    if (order.pipeline.stage !== 'production' && !isSuperadmin(req.user?.role)) {
+    if (order.pipeline.stage !== 'production' && !canOverride(req)) {
       return res.status(409).json({ message: 'Commande déjà traitée par la production' })
     }
 
@@ -335,7 +341,7 @@ router.post('/orders/:id/pull-back', authorize('designer'), async (req, res) => 
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
-    if (order.pipeline.stage !== 'production' && !isSuperadmin(req.user?.role)) {
+    if (order.pipeline.stage !== 'production' && !canOverride(req)) {
       return res.status(409).json({
         message: 'Commande déjà traitée par la production — retrait impossible',
       })
@@ -551,7 +557,7 @@ router.patch('/orders/:id/status', authorize('confirmatrice'), async (req, res) 
     // Sécurité : ne pas ramener en arrière une commande déjà travaillée
     // (design terminé, en production, emballée…) — sauf superadmin.
     const workedStages = ['production', 'emballage', 'livraison', 'termine']
-    if (workedStages.includes(order.pipeline.stage) && !isSuperadmin(req.user?.role)) {
+    if (workedStages.includes(order.pipeline.stage) && !canOverride(req)) {
       return res.status(409).json({
         message: `Commande déjà à l'étape « ${order.pipeline.stage} », statut non modifiable.`,
       })
@@ -641,7 +647,7 @@ router.put('/orders/:id', authorize('confirmatrice'), async (req, res) => {
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
     const workedStages = ['production', 'emballage', 'livraison', 'termine']
-    if (workedStages.includes(order.pipeline.stage) && !isSuperadmin(req.user?.role)) {
+    if (workedStages.includes(order.pipeline.stage) && !canOverride(req)) {
       return res.status(409).json({
         message: `Commande déjà à l'étape « ${order.pipeline.stage} », modification impossible.`,
       })
