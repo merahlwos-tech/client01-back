@@ -68,7 +68,27 @@ router.get('/stats', async (req, res) => {
   }
 })
 
+// Priorité d'affichage : les plus urgentes d'abord
+const URGENCY_RANK = { tres_urgent: 0, urgent: 1, normal: 2 }
+
+// Tri : urgence ↓, puis échéance la plus proche, puis FIFO
+function sortByPriority(orders) {
+  return orders.sort((a, b) => {
+    const ra = URGENCY_RANK[a.pipeline?.urgency] ?? 2
+    const rb = URGENCY_RANK[b.pipeline?.urgency] ?? 2
+    if (ra !== rb) return ra - rb
+
+    const da = a.pipeline?.deadlineAt ? new Date(a.pipeline.deadlineAt).getTime() : Infinity
+    const db = b.pipeline?.deadlineAt ? new Date(b.pipeline.deadlineAt).getTime() : Infinity
+    if (da !== db) return da - db
+
+    return new Date(a.createdAt) - new Date(b.createdAt)   // FIFO
+  })
+}
+
 // GET /api/workflow/orders?stage=confirmation — commandes d'une étape
+//   &slow=1 → uniquement les clients signalés « réponses lentes »
+//   &slow=0 (défaut) → tout sauf ces clients
 router.get('/orders', async (req, res) => {
   try {
     const stage = req.query.stage
@@ -78,10 +98,37 @@ router.get('/orders', async (req, res) => {
     if (!canView(req.user?.role, stage)) {
       return res.status(403).json({ message: 'Accès refusé à cette étape' })
     }
-    const orders = await Order.find({ 'pipeline.stage': stage })
+
+    const filter = { 'pipeline.stage': stage }
+
+    // Les commandes marquées « réponses lentes » sont mises de côté :
+    // elles n'apparaissent que dans la liste dédiée. ($ne couvre aussi
+    // les commandes antérieures, où le champ n'existe pas.)
+    if (req.query.slow === '1') {
+      filter['pipeline.designerTag'] = 'reponses_lentes'
+    } else {
+      filter['pipeline.designerTag'] = { $ne: 'reponses_lentes' }
+    }
+
+    const orders = await Order.find(filter)
       .populate('items.product', 'name images')
-      .sort({ createdAt: 1 })   // FIFO : les plus anciennes d'abord
-    res.json(orders)
+      .lean()
+
+    res.json(sortByPriority(orders))
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// GET /api/workflow/orders/slow-count?stage=design — nb de clients lents
+router.get('/orders/slow-count', async (req, res) => {
+  try {
+    const stage = req.query.stage || 'design'
+    const count = await Order.countDocuments({
+      'pipeline.stage': stage,
+      'pipeline.designerTag': 'reponses_lentes',
+    })
+    res.json({ count })
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })
   }
