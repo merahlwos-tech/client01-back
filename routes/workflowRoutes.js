@@ -24,6 +24,14 @@ const STAGE_ACTOR = {
 const canView = (role, stage) =>
   isSuperadmin(role) || role === 'chef_production' || role === STAGE_ACTOR[stage]
 
+// Démarre (ou redémarre) le compte à rebours de l'atelier.
+// Appelé quand une commande passe en « confirmé ».
+const startCountdown = (order) => {
+  const now = new Date()
+  order.pipeline.confirmedAt = now
+  order.pipeline.deadlineAt  = new Date(now.getTime() + Order.DEADLINE_DAYS * 24 * 60 * 60 * 1000)
+}
+
 // Ajoute une entrée d'historique
 const pushHistory = (order, stage, req, note = '') => {
   order.pipeline.history.push({
@@ -107,6 +115,7 @@ router.post('/orders/:id/confirm', authorize('confirmatrice'), async (req, res) 
     order.pipeline.stage       = 'design'
     order.pipeline.confirmedBy = req.user?.username || ''
     order.status = 'confirmé'   // cohérence avec le statut public (sans envoi Ecotrack)
+    startCountdown(order)       // démarre le compte à rebours de 6 jours
     pushHistory(order, 'design', req, 'Commande confirmée → design')
     await order.save()
     res.json(order)
@@ -132,26 +141,41 @@ router.post('/orders/:id/cancel', authorize('confirmatrice'), async (req, res) =
 })
 
 // POST /orders/:id/design — designer : design → production
-// body: { files: [url], notes }
+// Le designer n'envoie AUCUN fichier : il transmet simplement la commande
+// une fois son travail terminé. body: { notes } (optionnel)
 router.post('/orders/:id/design', authorize('designer'), async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
     if (!guardStage(order, 'design', req, res)) return
 
-    const files = Array.isArray(req.body.files) ? req.body.files.filter(Boolean) : []
-    if (files.length === 0) {
-      return res.status(400).json({ message: 'Ajoutez au moins un fichier de design' })
-    }
-
     order.pipeline.design = {
-      files,
+      files:       [],
       notes:       req.body.notes || '',
       submittedAt: new Date(),
       by:          req.user?.username || '',
     }
     order.pipeline.stage = 'production'
     pushHistory(order, 'production', req, 'Design terminé → production')
+    await order.save()
+    res.json(order)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// PATCH /orders/:id/designer-tag — étiquette posée par le designer
+// (ex. « réponses lentes » pour un client peu réactif)
+router.patch('/orders/:id/designer-tag', authorize('designer'), async (req, res) => {
+  try {
+    const { designerTag } = req.body
+    if (!Order.DESIGNER_TAGS.includes(designerTag)) {
+      return res.status(400).json({ message: 'Étiquette invalide' })
+    }
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+
+    order.pipeline.designerTag = designerTag
     await order.save()
     res.json(order)
   } catch (err) {
@@ -341,9 +365,16 @@ router.patch('/orders/:id/status', authorize('confirmatrice'), async (req, res) 
       })
     }
 
+    const wasConfirmed = order.status === 'confirmé'
+
     order.status = status
     order.pipeline.stage = nextStage
-    if (status === 'confirmé') order.pipeline.confirmedBy = req.user?.username || ''
+
+    // Passage en « confirmé » → démarre le compte à rebours de 6 jours
+    if (status === 'confirmé') {
+      order.pipeline.confirmedBy = req.user?.username || ''
+      if (!wasConfirmed) startCountdown(order)
+    }
 
     pushHistory(order, nextStage, req, `Statut → ${status}`)
     await order.save()
@@ -494,7 +525,10 @@ router.post('/confirmation', authorize('confirmatrice'), async (req, res) => {
     order.pipeline.stage   = STATUS_TO_STAGE[finalStatus]
     order.pipeline.manual  = true
     if (Order.URGENCY_LEVELS.includes(urgency)) order.pipeline.urgency = urgency
-    if (finalStatus === 'confirmé') order.pipeline.confirmedBy = req.user?.username || ''
+    if (finalStatus === 'confirmé') {
+      order.pipeline.confirmedBy = req.user?.username || ''
+      startCountdown(order)
+    }
 
     pushHistory(order, order.pipeline.stage, req, 'Commande créée manuellement')
     await order.save()

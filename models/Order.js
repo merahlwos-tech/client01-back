@@ -36,11 +36,25 @@ const materialUsedSchema = new mongoose.Schema({
 // Niveaux d'urgence posés par la confirmatrice
 const URGENCY_LEVELS = ['normal', 'urgent', 'tres_urgent']
 
+// Étiquettes posées par le designer (client lent à répondre…)
+const DESIGNER_TAGS = ['aucun', 'reponses_lentes']
+
+// Délai accordé à l'atelier une fois la commande confirmée
+const DEADLINE_DAYS = 6
+
 const pipelineSchema = new mongoose.Schema({
   stage: { type: String, enum: PIPELINE_STAGES, default: 'confirmation' },
 
   // Étiquette d'urgence (visible par tous les services)
   urgency: { type: String, enum: URGENCY_LEVELS, default: 'normal' },
+
+  // Étiquette posée par le designer (ex. client lent à répondre)
+  designerTag: { type: String, enum: DESIGNER_TAGS, default: 'aucun' },
+
+  // Compte à rebours : démarré quand la confirmatrice passe la commande
+  // en « confirmé ». deadlineAt = confirmedAt + DEADLINE_DAYS jours.
+  confirmedAt: { type: Date, default: null },
+  deadlineAt:  { type: Date, default: null },
 
   // Commande saisie manuellement par la confirmatrice (≠ commande du site)
   manual: { type: Boolean, default: false },
@@ -106,3 +120,5 @@ orderSchema.index({ 'pipeline.stage': 1, createdAt: -1 })
 module.exports = mongoose.model('Order', orderSchema)
 module.exports.PIPELINE_STAGES = PIPELINE_STAGES
 module.exports.URGENCY_LEVELS  = URGENCY_LEVELS
+module.exports.DESIGNER_TAGS   = DESIGNER_TAGS
+module.exports.DEADLINE_DAYS   = DEADLINE_DAYS
