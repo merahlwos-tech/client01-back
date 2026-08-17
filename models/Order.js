@@ -33,8 +33,17 @@ const materialUsedSchema = new mongoose.Schema({
   quantity: { type: Number, default: 0 },
 }, { _id: false })
 
+// Niveaux d'urgence posés par la confirmatrice
+const URGENCY_LEVELS = ['normal', 'urgent', 'tres_urgent']
+
 const pipelineSchema = new mongoose.Schema({
   stage: { type: String, enum: PIPELINE_STAGES, default: 'confirmation' },
+
+  // Étiquette d'urgence (visible par tous les services)
+  urgency: { type: String, enum: URGENCY_LEVELS, default: 'normal' },
+
+  // Commande saisie manuellement par la confirmatrice (≠ commande du site)
+  manual: { type: Boolean, default: false },
 
   // Travail du designer
   design: {
@@ -96,3 +105,4 @@ orderSchema.index({ 'pipeline.stage': 1, createdAt: -1 })
 
 module.exports = mongoose.model('Order', orderSchema)
 module.exports.PIPELINE_STAGES = PIPELINE_STAGES
+module.exports.URGENCY_LEVELS  = URGENCY_LEVELS
