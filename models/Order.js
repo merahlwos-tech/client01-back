@@ -67,6 +67,19 @@ const pipelineSchema = new mongoose.Schema({
     by:          { type: String,  default: '' },
   },
 
+  // Le designer a terminé son travail (« validé ») — la commande reste
+  // chez lui tant qu'il ne l'a pas explicitement envoyée en production.
+  designValidated:   { type: Boolean, default: false },
+  designValidatedAt: { type: Date,    default: null },
+
+  // Planification de la fabrication, choisie par le designer à l'envoi.
+  //   productionDate : date réelle « YYYY-MM-DD » (calculée côté client,
+  //                    donc dans le fuseau de l'atelier — pas de décalage)
+  //   productionDay  : jour de la semaine 0=dimanche … 6=samedi (affichage)
+  productionDate:     { type: String, default: '' },
+  productionDay:      { type: Number, default: null, min: 0, max: 6 },
+  sentToProductionAt: { type: Date,   default: null },
+
   // Consommation de matières par la production
   materialsUsed:   { type: [materialUsedSchema], default: [] },
   productionNotes: { type: String, default: '' },
@@ -116,6 +129,8 @@ orderSchema.index({ status: 1, total: 1 })
 orderSchema.index({ tags: 1 })
 // Requêtes fréquentes de l'atelier : lister les commandes d'une étape donnée
 orderSchema.index({ 'pipeline.stage': 1, createdAt: -1 })
+// La production interroge « les commandes à fabriquer aujourd'hui »
+orderSchema.index({ 'pipeline.stage': 1, 'pipeline.productionDate': 1 })
 
 module.exports = mongoose.model('Order', orderSchema)
 module.exports.PIPELINE_STAGES = PIPELINE_STAGES

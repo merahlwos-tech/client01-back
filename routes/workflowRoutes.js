@@ -110,6 +110,16 @@ router.get('/orders', async (req, res) => {
       filter['pipeline.designerTag'] = { $ne: 'reponses_lentes' }
     }
 
+    // Planification (la production ne voit que le jour même).
+    //   &date=YYYY-MM-DD  → à fabriquer ce jour-là
+    //   &overdueBefore=YYYY-MM-DD → planifiées avant cette date, non traitées
+    const { date, overdueBefore } = req.query
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) {
+      filter['pipeline.productionDate'] = date
+    } else if (/^\d{4}-\d{2}-\d{2}$/.test(String(overdueBefore || ''))) {
+      filter['pipeline.productionDate'] = { $lt: overdueBefore, $ne: '' }
+    }
+
     const orders = await Order.find(filter)
       .populate('items.product', 'name images')
       .lean()
@@ -129,6 +139,33 @@ router.get('/orders/slow-count', async (req, res) => {
       'pipeline.designerTag': 'reponses_lentes',
     })
     res.json({ count })
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// GET /api/workflow/orders/counters?date=YYYY-MM-DD
+// Compteurs des onglets du designer et de la production
+router.get('/orders/counters', async (req, res) => {
+  try {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || ''))
+      ? req.query.date : null
+
+    const notSlow = { $ne: 'reponses_lentes' }
+
+    const [aTraiter, validees, enProduction, slow, duJour, enRetard] = await Promise.all([
+      // chez le designer, pas encore validées
+      Order.countDocuments({ 'pipeline.stage': 'design', 'pipeline.designValidated': { $ne: true }, 'pipeline.designerTag': notSlow }),
+      // validées mais pas encore envoyées
+      Order.countDocuments({ 'pipeline.stage': 'design', 'pipeline.designValidated': true, 'pipeline.designerTag': notSlow }),
+      // envoyées en production, pas encore traitées
+      Order.countDocuments({ 'pipeline.stage': 'production' }),
+      Order.countDocuments({ 'pipeline.stage': 'design', 'pipeline.designerTag': 'reponses_lentes' }),
+      date ? Order.countDocuments({ 'pipeline.stage': 'production', 'pipeline.productionDate': date }) : 0,
+      date ? Order.countDocuments({ 'pipeline.stage': 'production', 'pipeline.productionDate': { $lt: date, $ne: '' } }) : 0,
+    ])
+
+    res.json({ aTraiter, validees, enProduction, slow, duJour, enRetard })
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })
   }
@@ -187,23 +224,124 @@ router.post('/orders/:id/cancel', authorize('confirmatrice'), async (req, res) =
   }
 })
 
-// POST /orders/:id/design — designer : design → production
-// Le designer n'envoie AUCUN fichier : il transmet simplement la commande
-// une fois son travail terminé. body: { notes } (optionnel)
-router.post('/orders/:id/design', authorize('designer'), async (req, res) => {
+// PATCH /orders/:id/design-validate — designer : marque son travail « validé »
+// La commande RESTE chez le designer : elle ne part en production que via
+// /send-production. body: { validated: true|false, notes }
+router.patch('/orders/:id/design-validate', authorize('designer'), async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
     if (!guardStage(order, 'design', req, res)) return
 
-    order.pipeline.design = {
-      files:       [],
-      notes:       req.body.notes || '',
-      submittedAt: new Date(),
-      by:          req.user?.username || '',
+    const validated = req.body.validated !== false
+
+    order.pipeline.designValidated   = validated
+    order.pipeline.designValidatedAt = validated ? new Date() : null
+
+    if (validated) {
+      order.pipeline.design = {
+        files:       [],
+        notes:       req.body.notes ?? order.pipeline.design?.notes ?? '',
+        submittedAt: new Date(),
+        by:          req.user?.username || '',
+      }
     }
-    order.pipeline.stage = 'production'
-    pushHistory(order, 'production', req, 'Design terminé → production')
+
+    pushHistory(order, 'design', req, validated ? 'Design validé' : 'Validation retirée')
+    await order.save()
+    res.json(order)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// POST /orders/:id/send-production — designer : design → production
+// body: { productionDate: 'YYYY-MM-DD', productionDay: 0-6, notes }
+// La date est calculée côté client (fuseau de l'atelier) pour éviter tout
+// décalage de jour avec le serveur.
+router.post('/orders/:id/send-production', authorize('designer'), async (req, res) => {
+  try {
+    const { productionDate, productionDay, notes } = req.body
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(productionDate || ''))) {
+      return res.status(400).json({ message: 'Jour de fabrication invalide' })
+    }
+    const day = Number(productionDay)
+    if (!Number.isInteger(day) || day < 0 || day > 6) {
+      return res.status(400).json({ message: 'Jour de la semaine invalide' })
+    }
+
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+    if (!guardStage(order, 'design', req, res)) return
+
+    if (!order.pipeline.designValidated && !isSuperadmin(req.user?.role)) {
+      return res.status(409).json({ message: 'Validez d\'abord le design avant de l\'envoyer' })
+    }
+
+    if (notes !== undefined) order.pipeline.design.notes = notes
+
+    order.pipeline.productionDate     = productionDate
+    order.pipeline.productionDay      = day
+    order.pipeline.sentToProductionAt = new Date()
+    order.pipeline.stage              = 'production'
+
+    pushHistory(order, 'production', req, `Envoyée en production pour le ${productionDate}`)
+    await order.save()
+    res.json(order)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// PATCH /orders/:id/production-day — designer : replanifier une commande
+// déjà envoyée (tant que la production ne l'a pas traitée)
+router.patch('/orders/:id/production-day', authorize('designer'), async (req, res) => {
+  try {
+    const { productionDate, productionDay } = req.body
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(productionDate || ''))) {
+      return res.status(400).json({ message: 'Jour de fabrication invalide' })
+    }
+    const day = Number(productionDay)
+    if (!Number.isInteger(day) || day < 0 || day > 6) {
+      return res.status(400).json({ message: 'Jour de la semaine invalide' })
+    }
+
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+    if (order.pipeline.stage !== 'production' && !isSuperadmin(req.user?.role)) {
+      return res.status(409).json({ message: 'Commande déjà traitée par la production' })
+    }
+
+    order.pipeline.productionDate = productionDate
+    order.pipeline.productionDay  = day
+    pushHistory(order, 'production', req, `Replanifiée au ${productionDate}`)
+    await order.save()
+    res.json(order)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// POST /orders/:id/pull-back — designer : retirer une commande de la
+// production (« ne pas donner à la production ») tant qu'elle n'est pas traitée
+router.post('/orders/:id/pull-back', authorize('designer'), async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+
+    if (order.pipeline.stage !== 'production' && !isSuperadmin(req.user?.role)) {
+      return res.status(409).json({
+        message: 'Commande déjà traitée par la production — retrait impossible',
+      })
+    }
+
+    order.pipeline.stage              = 'design'
+    order.pipeline.productionDate     = ''
+    order.pipeline.productionDay      = null
+    order.pipeline.sentToProductionAt = null
+
+    pushHistory(order, 'design', req, 'Retirée de la production par le designer')
     await order.save()
     res.json(order)
   } catch (err) {
