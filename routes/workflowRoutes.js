@@ -20,9 +20,14 @@ const STAGE_ACTOR = {
 }
 
 // Le chef de production et le superadmin voient toutes les étapes (supervision).
-// Un acteur ne voit que son étape.
+// Un acteur ne voit que son étape — sauf le designer, qui doit pouvoir suivre
+// les commandes qu'il a envoyées en production (section « Envoyé à la
+// production », tant qu'elles ne sont pas fabriquées).
 const canView = (role, stage) =>
-  isSuperadmin(role) || role === 'chef_production' || role === STAGE_ACTOR[stage]
+  isSuperadmin(role) ||
+  role === 'chef_production' ||
+  role === STAGE_ACTOR[stage] ||
+  (role === 'designer' && stage === 'production')
 
 // Démarre (ou redémarre) le compte à rebours de l'atelier.
 // Appelé quand une commande passe en « confirmé ».
