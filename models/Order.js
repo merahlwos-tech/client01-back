@@ -51,6 +51,9 @@ const pipelineSchema = new mongoose.Schema({
   // Étiquette posée par le designer (ex. client lent à répondre)
   designerTag: { type: String, enum: DESIGNER_TAGS, default: 'aucun' },
 
+  // Étiquettes personnalisées créées par les services (modèle Tag)
+  customTags: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Tag' }],
+
   // Compte à rebours : démarré quand la confirmatrice passe la commande
   // en « confirmé ». deadlineAt = confirmedAt + DEADLINE_DAYS jours.
   confirmedAt: { type: Date, default: null },

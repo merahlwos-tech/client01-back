@@ -133,6 +133,7 @@ router.get('/orders', async (req, res) => {
 
     const orders = await Order.find(filter)
       .populate('items.product', 'name images')
+      .populate('pipeline.customTags')
       .lean()
 
     res.json(sortByPriority(orders))
@@ -186,6 +187,7 @@ router.get('/orders/counters', async (req, res) => {
 router.get('/orders/:id', async (req, res) => {
   try {
     const order = await Order.findById(req.params.id).populate('items.product', 'name images')
+      .populate('pipeline.customTags')
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
     if (!canView(req.user?.role, order.pipeline.stage)) {
       return res.status(403).json({ message: 'Accès refusé' })
@@ -360,6 +362,28 @@ router.post('/orders/:id/pull-back', authorize('designer'), async (req, res) => 
   }
 })
 
+// PATCH /orders/:id/custom-tags — étiquettes personnalisées d'une commande
+// body: { tagIds: [ObjectId] } — remplace la liste pour le service concerné
+router.patch('/orders/:id/custom-tags', authorize('confirmatrice', 'designer'), async (req, res) => {
+  try {
+    const Tag = require('../models/Tag')
+    const ids = Array.isArray(req.body.tagIds) ? req.body.tagIds : []
+
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+
+    // On ne garde que des étiquettes réellement existantes
+    const valid = await Tag.find({ _id: { $in: ids } }).select('_id')
+    order.pipeline.customTags = valid.map(t => t._id)
+
+    await order.save()
+    await order.populate('pipeline.customTags')
+    res.json(order)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
 // PATCH /orders/:id/designer-tag — étiquette posée par le designer
 // (ex. « réponses lentes » pour un client peu réactif)
 router.patch('/orders/:id/designer-tag', authorize('designer'), async (req, res) => {
@@ -517,6 +541,7 @@ router.get('/confirmation', authorize('confirmatrice'), async (req, res) => {
 
     const orders = await Order.find(filter)
       .populate('items.product', 'name images')
+      .populate('pipeline.customTags')
       .sort({ createdAt: -1 })
       .limit(limit)
 
