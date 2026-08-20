@@ -307,9 +307,10 @@ router.post('/orders/:id/send-production', authorize('designer'), async (req, re
   }
 })
 
-// PATCH /orders/:id/production-day — designer : replanifier une commande
-// déjà envoyée (tant que la production ne l'a pas traitée)
-router.patch('/orders/:id/production-day', authorize('designer'), async (req, res) => {
+// PATCH /orders/:id/production-day — replanifier une commande déjà envoyée
+// (tant que la production ne l'a pas traitée).
+// Le chef de production peut corriger l'affectation faite par le designer.
+router.patch('/orders/:id/production-day', authorize('designer', 'chef_production'), async (req, res) => {
   try {
     const { productionDate, productionDay } = req.body
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(productionDate || ''))) {
@@ -356,6 +357,134 @@ router.post('/orders/:id/pull-back', authorize('designer'), async (req, res) => 
 
     pushHistory(order, 'design', req, 'Retirée de la production par le designer')
     await order.save()
+    res.json(order)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+/* ══════════════════════════════════════════════════════════════
+   NOTES PARTAGÉES — n'importe quel service peut en ajouter,
+   tout le monde les voit sur la commande.
+══════════════════════════════════════════════════════════════ */
+
+// POST /orders/:id/notes — ajouter une note { text }
+router.post('/orders/:id/notes', async (req, res) => {
+  try {
+    const text = String(req.body.text || '').trim()
+    if (!text) return res.status(400).json({ message: 'Note vide' })
+
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+
+    order.pipeline.notes.push({
+      text: text.slice(0, 500),
+      by:   req.user?.username || '',
+      role: req.user?.role || '',
+      at:   new Date(),
+    })
+    await order.save()
+    await order.populate('pipeline.customTags')
+    res.status(201).json(order)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// DELETE /orders/:id/notes/:noteId — retirer une note (auteur ou superadmin)
+router.delete('/orders/:id/notes/:noteId', async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+
+    const note = order.pipeline.notes.id(req.params.noteId)
+    if (!note) return res.status(404).json({ message: 'Note introuvable' })
+
+    const isAuthor = note.by && note.by === req.user?.username
+    if (!isAuthor && !canOverride(req)) {
+      return res.status(403).json({ message: 'Seul l\'auteur peut supprimer sa note' })
+    }
+
+    note.deleteOne()
+    await order.save()
+    await order.populate('pipeline.customTags')
+    res.json(order)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+/* ══════════════════════════════════════════════════════════════
+   SERVICE INSOLATION
+   Voit les commandes validées par le designer et les marque
+   « confirmé » une fois l'insolation faite.
+══════════════════════════════════════════════════════════════ */
+
+// GET /insolation?status=en_attente|confirme
+router.get('/insolation', authorize('insolation'), async (req, res) => {
+  try {
+    const status = Order.INSOLATION_STATUS.includes(req.query.status)
+      ? req.query.status : 'en_attente'
+
+    const filter = {
+      'pipeline.designValidated': true,                    // validées par le designer
+      'pipeline.stage': { $nin: ['annulee', 'termine'] },   // encore dans le circuit
+    }
+    // en_attente couvre aussi les commandes antérieures (champ absent)
+    filter['pipeline.insolation.status'] = status === 'confirme'
+      ? 'confirme'
+      : { $ne: 'confirme' }
+
+    const orders = await Order.find(filter)
+      .populate('items.product', 'name images')
+      .populate('pipeline.customTags')
+      .lean()
+
+    res.json(sortByPriority(orders))
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// GET /insolation/counts — compteurs des deux listes
+router.get('/insolation/counts', authorize('insolation'), async (req, res) => {
+  try {
+    const base = {
+      'pipeline.designValidated': true,
+      'pipeline.stage': { $nin: ['annulee', 'termine'] },
+    }
+    const [enAttente, confirme] = await Promise.all([
+      Order.countDocuments({ ...base, 'pipeline.insolation.status': { $ne: 'confirme' } }),
+      Order.countDocuments({ ...base, 'pipeline.insolation.status': 'confirme' }),
+    ])
+    res.json({ en_attente: enAttente, confirme })
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// PATCH /orders/:id/insolation — { status, note }
+router.patch('/orders/:id/insolation', authorize('insolation'), async (req, res) => {
+  try {
+    const { status, note } = req.body
+    if (!Order.INSOLATION_STATUS.includes(status)) {
+      return res.status(400).json({ message: 'Statut insolation invalide' })
+    }
+
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+
+    order.pipeline.insolation = {
+      status,
+      by:   req.user?.username || '',
+      at:   new Date(),
+      note: note !== undefined ? String(note).slice(0, 300) : (order.pipeline.insolation?.note || ''),
+    }
+
+    pushHistory(order, order.pipeline.stage, req,
+      status === 'confirme' ? 'Insolation confirmée' : 'Insolation remise en attente')
+    await order.save()
+    await order.populate('pipeline.customTags')
     res.json(order)
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })

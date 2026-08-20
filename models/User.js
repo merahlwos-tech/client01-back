@@ -9,7 +9,9 @@ const bcrypt   = require('bcryptjs')
 // designer        : réalise le design puis l'envoie en production
 // production      : fabrique, consomme le stock, envoie à l'emballage
 // emballage       : emballe la commande finie
-const ROLES = ['superadmin', 'chef_production', 'confirmatrice', 'designer', 'production', 'emballage']
+// insolation      : reçoit les commandes validées par le designer et les
+//                   marque « confirmé » une fois son travail fait
+const ROLES = ['superadmin', 'chef_production', 'confirmatrice', 'designer', 'insolation', 'production', 'emballage']
 
 const userSchema = new mongoose.Schema(
   {

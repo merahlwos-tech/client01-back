@@ -80,7 +80,11 @@ mongoose.connect(process.env.MONGO_URI, {
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 45000,
 })
-  .then(() => console.log('✅ MongoDB connecté'))
+  .then(() => {
+    console.log('✅ MongoDB connecté')
+    // Purge des commandes anciennes (voir utils/cleanupOldOrders.js)
+    require('./utils/cleanupOldOrders').scheduleCleanup()
+  })
   .catch(err => console.error('❌ Erreur MongoDB:', err))
 
 /* ══════════════════════════════════════════════

@@ -26,6 +26,17 @@ const pipelineHistorySchema = new mongoose.Schema({
   at:    { type: Date, default: Date.now },
 }, { _id: false })
 
+// Statuts du service insolation
+const INSOLATION_STATUS = ['en_attente', 'confirme']
+
+// Note libre ajoutée par n'importe quel service — visible par tous
+const noteSchema = new mongoose.Schema({
+  text: { type: String, required: true, trim: true, maxlength: 500 },
+  by:   { type: String, default: '' },
+  role: { type: String, default: '' },
+  at:   { type: Date,   default: Date.now },
+})
+
 // Matière première consommée par la production pour cette commande
 const materialUsedSchema = new mongoose.Schema({
   material: { type: mongoose.Schema.Types.ObjectId, ref: 'RawMaterial' },
@@ -90,6 +101,17 @@ const pipelineSchema = new mongoose.Schema({
   // Emballage
   packagingNotes:  { type: String, default: '' },
 
+  // Fil de notes partagé : chaque service peut en ajouter, tous les voient
+  notes: { type: [noteSchema], default: [] },
+
+  // Service insolation — reçoit les commandes validées par le designer
+  insolation: {
+    status: { type: String, enum: INSOLATION_STATUS, default: 'en_attente' },
+    by:     { type: String, default: '' },
+    at:     { type: Date,   default: null },
+    note:   { type: String, default: '' },
+  },
+
   // Assignations / auteurs par étape (facultatif, pour affichage)
   confirmedBy:     { type: String, default: '' },
 
@@ -138,5 +160,6 @@ orderSchema.index({ 'pipeline.stage': 1, 'pipeline.productionDate': 1 })
 module.exports = mongoose.model('Order', orderSchema)
 module.exports.PIPELINE_STAGES = PIPELINE_STAGES
 module.exports.URGENCY_LEVELS  = URGENCY_LEVELS
-module.exports.DESIGNER_TAGS   = DESIGNER_TAGS
-module.exports.DEADLINE_DAYS   = DEADLINE_DAYS
+module.exports.DESIGNER_TAGS     = DESIGNER_TAGS
+module.exports.DEADLINE_DAYS     = DEADLINE_DAYS
+module.exports.INSOLATION_STATUS = INSOLATION_STATUS
