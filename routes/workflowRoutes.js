@@ -337,9 +337,10 @@ router.patch('/orders/:id/production-day', authorize('designer', 'chef_productio
   }
 })
 
-// POST /orders/:id/pull-back — designer : retirer une commande de la
-// production (« ne pas donner à la production ») tant qu'elle n'est pas traitée
-router.post('/orders/:id/pull-back', authorize('designer'), async (req, res) => {
+// POST /orders/:id/pull-back — retirer une commande de la production
+// (« ne pas donner à la production ») tant qu'elle n'est pas traitée.
+// Accessible au designer et au chef de production.
+router.post('/orders/:id/pull-back', authorize('designer', 'chef_production'), async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
