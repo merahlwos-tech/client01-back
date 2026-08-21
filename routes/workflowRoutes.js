@@ -572,9 +572,8 @@ router.post('/orders/:id/produce', authorize('production'), async (req, res) => 
   }
 })
 
-// POST /orders/:id/package — emballage : emballage → terminé
-// L'étape « livraison » a été retirée de la plateforme : l'emballage clôt
-// désormais le circuit. La livraison est gérée en dehors de l'application.
+// POST /orders/:id/package — emballage : emballage → livraison
+// La note d'emballage est transmise au service de livraison.
 router.post('/orders/:id/package', authorize('emballage'), async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
@@ -582,8 +581,8 @@ router.post('/orders/:id/package', authorize('emballage'), async (req, res) => {
     if (!guardStage(order, 'emballage', req, res)) return
 
     order.pipeline.packagingNotes = req.body.notes || ''
-    order.pipeline.stage = 'termine'
-    pushHistory(order, 'termine', req, 'Emballage terminé — commande clôturée')
+    order.pipeline.stage = 'livraison'
+    pushHistory(order, 'livraison', req, 'Emballage terminé → livraison')
     await order.save()
     res.json(order)
   } catch (err) {
