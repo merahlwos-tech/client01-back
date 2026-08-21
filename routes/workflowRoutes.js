@@ -13,6 +13,16 @@ const { authenticateUser, authorize, isSuperadmin } = require('../middleware/aut
 // lui, obtient l'acces aux pages mais PAS ce droit d'override.
 const canOverride = (req) => isSuperadmin(req.user?.role) && !req.user?.openAccess
 
+// Prérogatives du chef de production : forcer une étape, modifier une commande
+// déjà en fabrication. En accès libre, les rôles n'existent plus (tout le monde
+// passe pour un superadmin) : le client doit alors marquer explicitement son
+// intention avec `asChef: true`, ce qui évite les manipulations accidentelles
+// sans prétendre à une sécurité que l'accès libre ne permet pas.
+const canForce = (req) =>
+  canOverride(req) ||
+  req.user?.role === 'chef_production' ||
+  (req.user?.openAccess && req.body?.asChef === true)
+
 
 router.use(authenticateUser)
 
@@ -795,13 +805,14 @@ async function normalizeItems(rawItems) {
 }
 
 // PUT /orders/:id — modifier une commande (client + articles + total)
-router.put('/orders/:id', authorize('confirmatrice'), async (req, res) => {
+// Le chef de production peut aussi modifier une commande déjà en fabrication.
+router.put('/orders/:id', authorize('confirmatrice', 'chef_production'), async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
     const workedStages = ['production', 'emballage', 'livraison', 'termine']
-    if (workedStages.includes(order.pipeline.stage) && !canOverride(req)) {
+    if (workedStages.includes(order.pipeline.stage) && !canForce(req)) {
       return res.status(409).json({
         message: `Commande déjà à l'étape « ${order.pipeline.stage} », modification impossible.`,
       })
@@ -891,8 +902,8 @@ router.post('/confirmation', authorize('confirmatrice'), async (req, res) => {
   }
 })
 
-// PATCH /orders/:id/stage — superadmin : forcer une étape (override)
-router.patch('/orders/:id/stage', authorize('superadmin'), async (req, res) => {
+// PATCH /orders/:id/stage — forcer une étape (superadmin et chef de production)
+router.patch('/orders/:id/stage', authorize('superadmin', 'chef_production'), async (req, res) => {
   try {
     const { stage, note } = req.body
     if (!Order.PIPELINE_STAGES.includes(stage)) {
