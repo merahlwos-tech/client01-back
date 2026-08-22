@@ -703,7 +703,17 @@ router.get('/confirmation', authorize('confirmatrice'), async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 100, 300)
 
     const filter = {}
-    if (status && VALID_STATUSES.includes(status)) filter.status = status
+    // « nouveau » = pas encore traitée par la confirmatrice
+    if (status === 'nouveau') {
+      filter['pipeline.statusSetAt'] = null
+    } else if (status && VALID_STATUSES.includes(status)) {
+      filter.status = status
+    }
+
+    // Filtre par étiquette personnalisée
+    if (req.query.tag && /^[0-9a-fA-F]{24}$/.test(req.query.tag)) {
+      filter['pipeline.customTags'] = req.query.tag
+    }
 
     if (q && q.trim()) {
       const rx = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
@@ -728,15 +738,28 @@ router.get('/confirmation', authorize('confirmatrice'), async (req, res) => {
   }
 })
 
-// GET /confirmation/counts — compteurs par statut (onglets)
+// GET /confirmation/counts — compteurs des onglets et des étiquettes
 router.get('/confirmation/counts', authorize('confirmatrice'), async (req, res) => {
   try {
-    const agg = await Order.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }])
-    const counts = { 'en attente': 0, 'confirmé': 0, 'annulé': 0, total: 0 }
+    const [agg, nouveau, parTag] = await Promise.all([
+      Order.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+      Order.countDocuments({ 'pipeline.statusSetAt': null }),
+      // Nombre de commandes portant chaque étiquette
+      Order.aggregate([
+        { $unwind: '$pipeline.customTags' },
+        { $group: { _id: '$pipeline.customTags', count: { $sum: 1 } } },
+      ]),
+    ])
+
+    const counts = { 'en attente': 0, 'confirmé': 0, 'annulé': 0, total: 0, nouveau }
     agg.forEach(r => {
       if (r._id in counts) counts[r._id] = r.count
       counts.total += r.count
     })
+
+    counts.tags = {}
+    parTag.forEach(t => { counts.tags[String(t._id)] = t.count })
+
     res.json(counts)
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })
@@ -769,6 +792,10 @@ router.patch('/orders/:id/status', authorize('confirmatrice'), async (req, res) 
 
     order.status = status
     order.pipeline.stage = nextStage
+
+    // La commande est traitée : elle quitte l'onglet « Commandes »
+    order.pipeline.statusSetAt = new Date()
+    order.pipeline.statusSetBy = req.user?.username || ''
 
     // Passage en « confirmé » → démarre le compte à rebours de 6 jours
     if (status === 'confirmé') {
@@ -925,6 +952,9 @@ router.post('/confirmation', authorize('confirmatrice'), async (req, res) => {
 
     order.pipeline.stage   = STATUS_TO_STAGE[finalStatus]
     order.pipeline.manual  = true
+    // Saisie manuelle : la confirmatrice a déjà décidé du statut
+    order.pipeline.statusSetAt = new Date()
+    order.pipeline.statusSetBy = req.user?.username || ''
     if (Order.URGENCY_LEVELS.includes(urgency)) order.pipeline.urgency = urgency
     if (finalStatus === 'confirmé') {
       order.pipeline.confirmedBy = req.user?.username || ''

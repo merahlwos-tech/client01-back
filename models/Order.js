@@ -115,6 +115,12 @@ const pipelineSchema = new mongoose.Schema({
   // Assignations / auteurs par étape (facultatif, pour affichage)
   confirmedBy:     { type: String, default: '' },
 
+  // Horodatage de la décision de la confirmatrice. Tant qu'il est nul, la
+  // commande est « nouvelle » : elle attend d'être traitée et figure dans
+  // l'onglet « Commandes ». Dès qu'un statut est posé, elle en sort.
+  statusSetAt:     { type: Date,   default: null },
+  statusSetBy:     { type: String, default: '' },
+
   history:         { type: [pipelineHistorySchema], default: [] },
 }, { _id: false })
 
