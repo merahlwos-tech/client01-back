@@ -9,9 +9,12 @@ const Order = require('../models/Order')
    n'est plus « en attente » ont donc bien été décidées, on les marque comme
    telles pour qu'elles ne réapparaissent pas dans l'onglet « Commandes ». */
 async function backfillStatusSetAt() {
+  // Le pipeline d'agrégation permet de reprendre `updatedAt` comme date de
+  // décision. Mongoose 9 exige `updatePipeline: true` pour l'accepter.
   const res = await Order.updateMany(
     { 'pipeline.statusSetAt': null, status: { $ne: 'en attente' } },
-    [{ $set: { 'pipeline.statusSetAt': '$updatedAt', 'pipeline.statusSetBy': 'historique' } }]
+    [{ $set: { 'pipeline.statusSetAt': '$updatedAt', 'pipeline.statusSetBy': 'historique' } }],
+    { updatePipeline: true }
   )
   if (res.modifiedCount > 0) {
     console.log(`🔧 [MIGRATION] ${res.modifiedCount} commande(s) marquée(s) comme déjà traitées`)
