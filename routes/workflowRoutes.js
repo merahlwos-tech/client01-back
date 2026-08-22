@@ -703,11 +703,14 @@ router.get('/confirmation', authorize('confirmatrice'), async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 100, 300)
 
     const filter = {}
-    // « nouveau » = pas encore traitée par la confirmatrice
+    // « nouveau » = arrivée du site, pas encore traitée par la confirmatrice.
+    // Les statuts, eux, sont des DÉCISIONS : « en attente » n'est donc pas
+    // l'état par défaut d'une commande, mais un choix explicite.
     if (status === 'nouveau') {
       filter['pipeline.statusSetAt'] = null
     } else if (status && VALID_STATUSES.includes(status)) {
       filter.status = status
+      filter['pipeline.statusSetAt'] = { $ne: null }
     }
 
     // Filtre par étiquette personnalisée
@@ -742,7 +745,12 @@ router.get('/confirmation', authorize('confirmatrice'), async (req, res) => {
 router.get('/confirmation/counts', authorize('confirmatrice'), async (req, res) => {
   try {
     const [agg, nouveau, parTag] = await Promise.all([
-      Order.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+      // Les compteurs de statut ne comptent que les décisions de la
+      // confirmatrice, pas les commandes qui viennent d'arriver du site.
+      Order.aggregate([
+        { $match: { 'pipeline.statusSetAt': { $ne: null } } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
       Order.countDocuments({ 'pipeline.statusSetAt': null }),
       // Nombre de commandes portant chaque étiquette
       Order.aggregate([
@@ -751,7 +759,7 @@ router.get('/confirmation/counts', authorize('confirmatrice'), async (req, res) 
       ]),
     ])
 
-    const counts = { 'en attente': 0, 'confirmé': 0, 'annulé': 0, total: 0, nouveau }
+    const counts = { 'en attente': 0, 'confirmé': 0, 'annulé': 0, total: nouveau, nouveau }
     agg.forEach(r => {
       if (r._id in counts) counts[r._id] = r.count
       counts.total += r.count
