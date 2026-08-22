@@ -166,6 +166,44 @@ router.get('/orders/slow-count', async (req, res) => {
   }
 })
 
+// GET /api/workflow/production-planning?from=YYYY-MM-DD&to=YYYY-MM-DD
+// Nombre de commandes à fabriquer par jour, pour l'emploi du temps hebdomadaire.
+router.get('/production-planning', async (req, res) => {
+  try {
+    const { from, to } = req.query
+    const ok = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''))
+    if (!ok(from) || !ok(to)) {
+      return res.status(400).json({ message: 'Intervalle de dates invalide' })
+    }
+
+    // productionDate est une chaîne « YYYY-MM-DD » : la comparaison
+    // lexicographique équivaut à une comparaison chronologique.
+    const agg = await Order.aggregate([
+      {
+        $match: {
+          'pipeline.stage': 'production',
+          'pipeline.productionDate': { $gte: from, $lte: to },
+        },
+      },
+      {
+        $group: {
+          _id:    '$pipeline.productionDate',
+          total:  { $sum: 1 },
+          urgent: { $sum: { $cond: [{ $in: ['$pipeline.urgency', ['urgent', 'tres_urgent']] }, 1, 0] } },
+          pieces: { $sum: { $sum: '$items.quantity' } },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ])
+
+    res.json(agg.map(d => ({
+      date: d._id, total: d.total, urgent: d.urgent, pieces: d.pieces,
+    })))
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
 // GET /api/workflow/orders/counters?date=YYYY-MM-DD
 // Compteurs des onglets du designer et de la production
 router.get('/orders/counters', async (req, res) => {
