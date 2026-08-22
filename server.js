@@ -82,6 +82,8 @@ mongoose.connect(process.env.MONGO_URI, {
 })
   .then(() => {
     console.log('✅ MongoDB connecté')
+    // Mises à niveau de données (idempotentes)
+    require('./utils/migrations').runMigrations()
     // Purge des commandes anciennes (voir utils/cleanupOldOrders.js)
     require('./utils/cleanupOldOrders').scheduleCleanup()
   })
