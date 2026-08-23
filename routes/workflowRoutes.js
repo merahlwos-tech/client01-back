@@ -166,6 +166,21 @@ router.get('/orders/slow-count', async (req, res) => {
   }
 })
 
+// GET /api/workflow/products — catalogue COMPLET pour la saisie de commande.
+// La route publique /api/products masque les catégories cachées aux visiteurs ;
+// l'atelier, lui, doit pouvoir vendre l'ensemble du catalogue.
+router.get('/products', async (req, res) => {
+  try {
+    const Product = require('../models/Product')
+    const products = await Product.find()
+      .sort({ position: 1, createdAt: 1 })
+      .lean()
+    res.json(products)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
 // GET /api/workflow/production-planning?from=YYYY-MM-DD&to=YYYY-MM-DD
 // Nombre de commandes à fabriquer par jour, pour l'emploi du temps hebdomadaire.
 router.get('/production-planning', async (req, res) => {
