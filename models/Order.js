@@ -97,9 +97,14 @@ const pipelineSchema = new mongoose.Schema({
   // Consommation de matières par la production
   materialsUsed:   { type: [materialUsedSchema], default: [] },
   productionNotes: { type: String, default: '' },
+  producedAt:      { type: Date, default: null },   // fabrication terminée
 
   // Emballage
   packagingNotes:  { type: String, default: '' },
+  packagedAt:      { type: Date, default: null },   // emballage terminé
+
+  // Expédition
+  deliveredAt:     { type: Date, default: null },
 
   // Fil de notes partagé : chaque service peut en ajouter, tous les voient
   notes: { type: [noteSchema], default: [] },

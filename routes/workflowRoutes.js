@@ -181,6 +181,61 @@ router.get('/products', async (req, res) => {
   }
 })
 
+/* ══════════════════════════════════════════════════════════════
+   HISTORIQUE PAR SERVICE
+   Chaque service retrouve l'intégralité des commandes qu'il a
+   traitées, sur la période choisie, avec le décompte par statut.
+══════════════════════════════════════════════════════════════ */
+
+// Le passage d'une commande dans un service est daté par un champ dédié :
+// c'est lui qui sert de repère chronologique pour l'historique.
+const SERVICE_DATE_FIELD = {
+  confirmatrice: 'pipeline.statusSetAt',
+  designer:      'pipeline.designValidatedAt',
+  insolation:    'pipeline.insolation.at',
+  production:    'pipeline.producedAt',
+  emballage:     'pipeline.packagedAt',
+  livraison:     'pipeline.deliveredAt',
+}
+
+// GET /api/workflow/history?service=confirmatrice&days=7
+router.get('/history', async (req, res) => {
+  try {
+    const service = req.query.service
+    const field   = SERVICE_DATE_FIELD[service]
+    if (!field) return res.status(400).json({ message: 'Service invalide' })
+
+    const days  = Math.min(Math.max(parseInt(req.query.days) || 7, 1), 366)
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+    const limit = Math.min(parseInt(req.query.limit) || 200, 500)
+
+    const base = { [field]: { $ne: null, $gte: since } }
+
+    const [orders, parStatut] = await Promise.all([
+      Order.find(base)
+        .populate('items.product', 'name images')
+        .populate('pipeline.customTags')
+        .sort({ [field]: -1 })
+        .limit(limit)
+        .lean(),
+      Order.aggregate([
+        { $match: base },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
+    ])
+
+    const counts = { 'confirmé': 0, 'en attente': 0, 'annulé': 0, total: 0 }
+    parStatut.forEach(r => {
+      if (r._id in counts) counts[r._id] = r.count
+      counts.total += r.count
+    })
+
+    res.json({ orders, counts, days })
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
 // GET /api/workflow/production-planning?from=YYYY-MM-DD&to=YYYY-MM-DD
 // Nombre de commandes à fabriquer par jour, pour l'emploi du temps hebdomadaire.
 router.get('/production-planning', async (req, res) => {
@@ -626,6 +681,7 @@ router.post('/orders/:id/produce', authorize('production'), async (req, res) => 
     }
 
     order.pipeline.materialsUsed   = applied
+    order.pipeline.producedAt      = new Date()
     order.pipeline.productionNotes = req.body.notes || ''
     order.pipeline.stage = 'emballage'
     pushHistory(order, 'emballage', req, `Fabrication terminée (${applied.length} matière(s) consommée(s)) → emballage`)
@@ -645,6 +701,7 @@ router.post('/orders/:id/package', authorize('emballage'), async (req, res) => {
     if (!guardStage(order, 'emballage', req, res)) return
 
     order.pipeline.packagingNotes = req.body.notes || ''
+    order.pipeline.packagedAt     = new Date()
     order.pipeline.stage = 'livraison'
     pushHistory(order, 'livraison', req, 'Emballage terminé → livraison')
     await order.save()
@@ -685,6 +742,7 @@ router.post('/orders/:id/deliver', authorize('chef_production'), async (req, res
     }
 
     order.pipeline.stage = 'termine'
+    order.pipeline.deliveredAt = new Date()
     pushHistory(order, 'termine', req,
       ecotrackResult?.tracking ? `Expédiée (tracking ${ecotrackResult.tracking})`
         : skipEcotrack ? 'Marquée livrée (sans envoi)' : 'Marquée livrée')
