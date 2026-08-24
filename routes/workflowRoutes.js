@@ -131,6 +131,14 @@ router.get('/orders', async (req, res) => {
       filter['pipeline.designerTag'] = { $ne: 'reponses_lentes' }
     }
 
+    // Travail du designer : &validated=1 → déjà validées (liste « traitées »),
+    // &validated=0 → encore à designer.
+    if (req.query.validated === '1') {
+      filter['pipeline.designValidated'] = true
+    } else if (req.query.validated === '0') {
+      filter['pipeline.designValidated'] = { $ne: true }
+    }
+
     // Planification (la production ne voit que le jour même).
     //   &date=YYYY-MM-DD  → à fabriquer ce jour-là
     //   &overdueBefore=YYYY-MM-DD → planifiées avant cette date, non traitées
