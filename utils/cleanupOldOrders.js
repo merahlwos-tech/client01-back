@@ -2,8 +2,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // ⚠️  SUPPRESSION DÉFINITIVE DE COMMANDES
 //
-// Toute commande dont la date de création dépasse ORDER_RETENTION_DAYS (30 par
-// défaut) est supprimée, ainsi que les logos clients associés sur Cloudinary.
+// Toute commande dont la date de création dépasse ORDER_RETENTION_DAYS (90 par
+// défaut, soit trois mois) est supprimée, ainsi que les logos clients associés
+// sur Cloudinary (images et PDF).
 // L'opération est IRRÉVERSIBLE : il n'y a pas de corbeille.
 //
 // 👉 Pour ne purger QUE les commandes terminées ou annulées (et donc conserver
@@ -16,9 +17,10 @@
 const Order      = require('../models/Order')
 const cloudinary = require('../config/cloudinary')
 
+// Trois mois
 const RETENTION_DAYS = process.env.ORDER_RETENTION_DAYS !== undefined
   ? Number(process.env.ORDER_RETENTION_DAYS)
-  : 30
+  : 90
 
 // Passer à true pour épargner les commandes encore en cours de traitement
 const ONLY_FINISHED = false
@@ -40,12 +42,17 @@ async function cleanupOldOrders() {
     filter['pipeline.stage'] = { $in: ['termine', 'annulee'] }
   }
 
-  // On récupère d'abord les commandes pour nettoyer leurs images
-  const old = await Order.find(filter).select('_id customerInfo.logoUrls').lean()
+  // On récupère d'abord les commandes pour nettoyer leurs fichiers
+  const old = await Order.find(filter)
+    .select('_id customerInfo.logoUrls pipeline.design.files')
+    .lean()
   if (old.length === 0) return { deleted: 0 }
 
-  // Suppression des logos Cloudinary (best effort : un échec ne bloque pas)
-  const urls = old.flatMap(o => o.customerInfo?.logoUrls || [])
+  // Logos clients + fichiers de design hérités (best effort : un échec ne bloque pas)
+  const urls = old.flatMap(o => [
+    ...(o.customerInfo?.logoUrls || []),
+    ...(o.pipeline?.design?.files || []),
+  ])
   await Promise.all(urls.map(url => {
     const publicId = extractCloudinaryPublicId(url)
     if (!publicId) return Promise.resolve()
@@ -55,8 +62,8 @@ async function cleanupOldOrders() {
   }))
 
   const result = await Order.deleteMany({ _id: { $in: old.map(o => o._id) } })
-  console.log(`🗑️  [PURGE] ${result.deletedCount} commande(s) de plus de ${RETENTION_DAYS} jours supprimée(s)`)
-  return { deleted: result.deletedCount }
+  console.log(`🗑️  [PURGE] ${result.deletedCount} commande(s) de plus de ${RETENTION_DAYS} jours supprimée(s), ${urls.length} fichier(s) associé(s)`)
+  return { deleted: result.deletedCount, files: urls.length }
 }
 
 // Lance la purge au démarrage puis toutes les 6 heures
