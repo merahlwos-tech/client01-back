@@ -975,8 +975,11 @@ router.put('/orders/:id', authorize('confirmatrice', 'chef_production'), async (
     const { customerInfo, items, total } = req.body
 
     if (customerInfo) {
+      // logoUrls inclus : la confirmatrice doit pouvoir ajouter ou corriger
+      // le logo du client après coup, pas seulement à la création.
       const allowed = ['firstName', 'lastName', 'phone', 'wilaya', 'wilayaCode',
-                       'commune', 'description', 'deliveryMethod', 'deliveryFee']
+                       'commune', 'description', 'deliveryMethod', 'deliveryFee',
+                       'logoUrls']
       allowed.forEach(k => {
         if (customerInfo[k] !== undefined) order.customerInfo[k] = customerInfo[k]
       })
