@@ -553,9 +553,16 @@ router.get('/insolation', authorize('insolation'), async (req, res) => {
     const status = Order.INSOLATION_STATUS.includes(req.query.status)
       ? req.query.status : 'en_attente'
 
+    /* L'insolation et la production reçoivent la commande AU MÊME MOMENT :
+       quand le designer l'envoie. Une commande seulement « traitée », encore
+       chez lui, ne doit donc pas apparaître ici.
+       ($or couvre les commandes envoyées avant l'ajout de sentToProductionAt) */
     const filter = {
-      'pipeline.designValidated': true,                    // validées par le designer
-      'pipeline.stage': { $nin: ['annulee', 'termine'] },   // encore dans le circuit
+      $or: [
+        { 'pipeline.sentToProductionAt': { $ne: null } },
+        { 'pipeline.stage': { $in: ['production', 'emballage', 'livraison'] } },
+      ],
+      'pipeline.stage': { $nin: ['annulee', 'termine'] },
     }
     // en_attente couvre aussi les commandes antérieures (champ absent)
     filter['pipeline.insolation.status'] = status === 'confirme'
@@ -576,8 +583,12 @@ router.get('/insolation', authorize('insolation'), async (req, res) => {
 // GET /insolation/counts — compteurs des deux listes
 router.get('/insolation/counts', authorize('insolation'), async (req, res) => {
   try {
+    // Même règle que la liste : la commande doit avoir été envoyée
     const base = {
-      'pipeline.designValidated': true,
+      $or: [
+        { 'pipeline.sentToProductionAt': { $ne: null } },
+        { 'pipeline.stage': { $in: ['production', 'emballage', 'livraison'] } },
+      ],
       'pipeline.stage': { $nin: ['annulee', 'termine'] },
     }
     const [enAttente, confirme] = await Promise.all([
