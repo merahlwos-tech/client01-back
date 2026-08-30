@@ -97,6 +97,9 @@ app.get('/health', (req, res) => {
     status: 'ok',
     db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
     uptime: Math.floor(process.uptime()),
+    // Render expose le commit déployé : permet de savoir avec certitude
+    // quelle version du code répond, l'uptime n'étant pas fiable ici.
+    commit: (process.env.RENDER_GIT_COMMIT || '').slice(0, 7) || 'inconnu',
   })
 })
 
