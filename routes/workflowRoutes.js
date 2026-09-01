@@ -816,6 +816,7 @@ router.get('/confirmation', authorize('confirmatrice'), async (req, res) => {
         { 'customerInfo.firstName': rx },
         { 'customerInfo.lastName':  rx },
         { 'customerInfo.phone':     rx },
+        { 'customerInfo.extraPhones': rx },
         { 'customerInfo.commune':   rx },
         { 'customerInfo.wilaya':    rx },
       ]
@@ -934,6 +935,26 @@ const computeTotal = (items, deliveryFee = 0) =>
   items.reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.quantity) || 0), 0)
   + (Number(deliveryFee) || 0)
 
+// Nettoie une couleur saisie librement (sac, impression)
+const cleanColor = (v) => String(v || '').trim().slice(0, 40)
+
+// Numéros de téléphone supplémentaires : on retire les vides et les doublons
+const MAX_EXTRA_PHONES = 5
+function normalizePhones(raw, mainPhone = '') {
+  if (!Array.isArray(raw)) return []
+  const main = String(mainPhone || '').trim()
+  const seen = new Set(main ? [main] : [])
+  const out = []
+  for (const p of raw) {
+    const v = String(p || '').trim().slice(0, 30)
+    if (!v || seen.has(v)) continue
+    seen.add(v)
+    out.push(v)
+    if (out.length >= MAX_EXTRA_PHONES) break
+  }
+  return out
+}
+
 // Valide et normalise les articles reçus du client
 async function normalizeItems(rawItems) {
   const items = []
@@ -964,6 +985,8 @@ async function normalizeItems(rawItems) {
       doubleSided:    !!it.doubleSided,
       selectedColors: Array.isArray(it.selectedColors) ? it.selectedColors : [],
       numberOfColors: it.numberOfColors != null ? Number(it.numberOfColors) : null,
+      bagColor:       cleanColor(it.bagColor),
+      printColor:     cleanColor(it.printColor),
     })
   }
   return items
@@ -994,6 +1017,12 @@ router.put('/orders/:id', authorize('confirmatrice', 'chef_production'), async (
       allowed.forEach(k => {
         if (customerInfo[k] !== undefined) order.customerInfo[k] = customerInfo[k]
       })
+      // Numéros secondaires : dédoublonnés et comparés au numéro principal
+      // APRÈS mise à jour, pour ne jamais dupliquer celui-ci.
+      if (customerInfo.extraPhones !== undefined) {
+        order.customerInfo.extraPhones =
+          normalizePhones(customerInfo.extraPhones, order.customerInfo.phone)
+      }
     }
 
     if (items !== undefined) {
@@ -1040,6 +1069,7 @@ router.post('/confirmation', authorize('confirmatrice'), async (req, res) => {
         firstName:      customerInfo.firstName.trim(),
         lastName:       customerInfo.lastName.trim(),
         phone:          String(customerInfo.phone).trim(),
+        extraPhones:    normalizePhones(customerInfo.extraPhones, customerInfo.phone),
         wilaya:         customerInfo.wilaya,
         wilayaCode:     customerInfo.wilayaCode != null ? Number(customerInfo.wilayaCode) : null,
         commune:        customerInfo.commune,

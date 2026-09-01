@@ -7,6 +7,10 @@ const orderItemSchema = new mongoose.Schema({
   doubleSided:    { type: Boolean, default: false },
   selectedColors: { type: [String], default: [] },   // couleurs choisies par le client
   numberOfColors: { type: Number,   default: null },  // nb de couleurs dans le design
+  // Couleurs précisées par la confirmatrice au téléphone : le support et
+  // l'encre. Le designer et la production s'y réfèrent pour fabriquer.
+  bagColor:       { type: String, default: '' },      // couleur du sac / support
+  printColor:     { type: String, default: '' },      // couleur de l'impression
   quantity:       { type: Number, required: true },
   price:          { type: Number, required: true },
 })
@@ -133,6 +137,9 @@ const customerInfoSchema = new mongoose.Schema({
   firstName:      { type: String, required: true },
   lastName:       { type: String, required: true },
   phone:          { type: String, required: true },
+  // Numéros supplémentaires ajoutés par la confirmatrice (second portable,
+  // fixe, numéro d'un proche…). Le premier reste `phone`.
+  extraPhones:    { type: [String], default: [] },
   wilaya:         { type: String, required: true },
   wilayaCode:     { type: Number, default: null },   // code numérique 1-58 pour Ecotrack
   commune:        { type: String, required: true },
