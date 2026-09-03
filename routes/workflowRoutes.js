@@ -6,6 +6,7 @@ const Order         = require('../models/Order')
 const RawMaterial   = require('../models/RawMaterial')
 const StockMovement = require('../models/StockMovement')
 const { sendToEcotrack } = require('../utils/ecotrack')
+const { deleteOrdersByIds, CANCELLED_RETENTION_DAYS } = require('../utils/cleanupOldOrders')
 const { authenticateUser, authorize, isSuperadmin } = require('../middleware/auth')
 
 // Un vrai superadmin peut passer outre les garde-fous metier (sauter une
@@ -83,7 +84,8 @@ router.get('/stats', async (req, res) => {
     ])
     const byStage = { confirmation: 0, design: 0, production: 0, emballage: 0, livraison: 0, termine: 0, annulee: 0 }
     agg.forEach(r => { if (r._id) byStage[r._id] = r.count })
-    res.json(byStage)
+    // Les panels s'en servent pour annoncer la date de suppression d'une annulée
+    res.json({ ...byStage, cancelledRetentionDays: CANCELLED_RETENTION_DAYS })
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })
   }
@@ -139,6 +141,14 @@ router.get('/orders', async (req, res) => {
       filter['pipeline.designValidated'] = { $ne: true }
     }
 
+    /* Une commande quitte la vue d'un service dès que le SUIVANT l'a prise
+       en charge. Le designer, par exemple, ne garde dans « envoyées » que
+       celles que l'insolation n'a pas encore confirmées. */
+    if (req.query.insolation === 'pending') {
+      filter['pipeline.insolation.status'] = { $ne: 'confirme' }
+      filter['pipeline.producedAt'] = null
+    }
+
     // Planification (la production ne voit que le jour même).
     //   &date=YYYY-MM-DD  → à fabriquer ce jour-là
     //   &overdueBefore=YYYY-MM-DD → planifiées avant cette date, non traitées
@@ -169,6 +179,78 @@ router.get('/orders/slow-count', async (req, res) => {
       'pipeline.designerTag': 'reponses_lentes',
     })
     res.json({ count })
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+/* ══════════════════════════════════════════════════════════════
+   RECHERCHE TRANSVERSE
+   N'importe quel service retrouve une commande et voit à quelle
+   étape — donc chez quel service — elle se trouve.
+══════════════════════════════════════════════════════════════ */
+const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// GET /api/workflow/search?q=nom|téléphone|commune|référence
+router.get('/search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim()
+    if (q.length < 2) return res.json([])
+
+    const rx = new RegExp(escapeRx(q), 'i')
+    const or = [
+      { 'customerInfo.firstName':   rx },
+      { 'customerInfo.lastName':    rx },
+      { 'customerInfo.phone':       rx },
+      { 'customerInfo.extraPhones': rx },
+      { 'customerInfo.commune':     rx },
+      { 'customerInfo.wilaya':      rx },
+    ]
+
+    /* Référence affichée dans l'atelier = les 8 derniers caractères de l'_id.
+       On compare donc sur sa forme textuelle. */
+    const hex = q.replace(/^#/, '')
+    if (/^[0-9a-fA-F]{4,24}$/.test(hex)) {
+      or.push({ $expr: { $regexMatch: {
+        input: { $toString: '$_id' }, regex: escapeRx(hex), options: 'i',
+      } } })
+    }
+
+    const orders = await Order.find({ $or: or })
+      .populate('items.product', 'name images')
+      .populate('pipeline.customTags')
+      .sort({ createdAt: -1 })
+      .limit(30)
+      .lean()
+
+    res.json(orders)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+/* ══════════════════════════════════════════════════════════════
+   SUPPRESSION MANUELLE
+   La confirmatrice et le designer peuvent supprimer les commandes
+   qu'ils sélectionnent. C'est DÉFINITIF (logos compris).
+══════════════════════════════════════════════════════════════ */
+// POST /api/workflow/orders/bulk-delete  { ids: [...] }
+router.post('/orders/bulk-delete', authorize(
+  'confirmatrice', 'designer', 'chef_production',
+), async (req, res) => {
+  try {
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : [])
+      .filter(id => /^[0-9a-fA-F]{24}$/.test(String(id)))
+    if (ids.length === 0) {
+      return res.status(400).json({ message: 'Aucune commande sélectionnée' })
+    }
+    if (ids.length > 100) {
+      return res.status(400).json({ message: '100 commandes au maximum à la fois' })
+    }
+
+    const result = await deleteOrdersByIds(ids)
+    console.log(`🗑️  [SUPPRESSION] ${result.deleted} commande(s) par ${req.user?.role || 'atelier'}`)
+    res.json(result)
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })
   }
@@ -206,18 +288,34 @@ const SERVICE_DATE_FIELD = {
   livraison:     'pipeline.deliveredAt',
 }
 
+/* Intervalle demandé : soit une fenêtre glissante (&days=7), soit deux
+   instants précis envoyés par le calendrier (&from=…&to=… en ISO, calculés
+   dans le fuseau de l'atelier pour que « lundi » soit bien lundi). */
+function historyRange(query) {
+  const parse = (v) => {
+    const d = new Date(String(v || ''))
+    return isNaN(d.getTime()) ? null : d
+  }
+  const from = parse(query.from)
+  const to   = parse(query.to)
+  if (from && to && to > from) return { from, to, days: null }
+
+  const days = Math.min(Math.max(parseInt(query.days) || 7, 1), 366)
+  return { from: new Date(Date.now() - days * 24 * 60 * 60 * 1000), to: null, days }
+}
+
 // GET /api/workflow/history?service=confirmatrice&days=7
+//                          ou &from=ISO&to=ISO (calendrier)
 router.get('/history', async (req, res) => {
   try {
     const service = req.query.service
     const field   = SERVICE_DATE_FIELD[service]
     if (!field) return res.status(400).json({ message: 'Service invalide' })
 
-    const days  = Math.min(Math.max(parseInt(req.query.days) || 7, 1), 366)
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+    const { from, to, days } = historyRange(req.query)
     const limit = Math.min(parseInt(req.query.limit) || 200, 500)
 
-    const base = { [field]: { $ne: null, $gte: since } }
+    const base = { [field]: { $ne: null, $gte: from, ...(to ? { $lte: to } : {}) } }
 
     const [orders, parStatut] = await Promise.all([
       Order.find(base)
@@ -239,6 +337,43 @@ router.get('/history', async (req, res) => {
     })
 
     res.json({ orders, counts, days })
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// GET /api/workflow/history/calendar?service=&from=ISO&to=ISO&tz=+01:00
+// Décompte par JOUR et par statut, pour colorer le calendrier de l'historique.
+router.get('/history/calendar', async (req, res) => {
+  try {
+    const field = SERVICE_DATE_FIELD[req.query.service]
+    if (!field) return res.status(400).json({ message: 'Service invalide' })
+
+    const { from, to } = historyRange(req.query)
+    // Le regroupement par jour se fait dans le fuseau de l'atelier, sinon une
+    // commande de 23 h basculerait sur la veille.
+    const tz = /^[+-]\d{2}:\d{2}$/.test(String(req.query.tz || '')) ? req.query.tz : '+00:00'
+
+    const rows = await Order.aggregate([
+      { $match: { [field]: { $ne: null, $gte: from, ...(to ? { $lte: to } : {}) } } },
+      { $group: {
+        _id: {
+          jour:   { $dateToString: { format: '%Y-%m-%d', date: `$${field}`, timezone: tz } },
+          statut: '$status',
+        },
+        count: { $sum: 1 },
+      } },
+    ])
+
+    const jours = {}
+    rows.forEach(r => {
+      const key = r._id.jour
+      if (!jours[key]) jours[key] = { total: 0, 'confirmé': 0, 'en attente': 0, 'annulé': 0 }
+      if (r._id.statut in jours[key]) jours[key][r._id.statut] = r.count
+      jours[key].total += r.count
+    })
+
+    res.json({ jours })
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })
   }
@@ -347,13 +482,19 @@ router.post('/orders/:id/confirm', authorize('confirmatrice'), async (req, res) 
   }
 })
 
-// POST /orders/:id/cancel — confirmatrice/superadmin : → annulee
-router.post('/orders/:id/cancel', authorize('confirmatrice'), async (req, res) => {
+// POST /orders/:id/cancel — N'IMPORTE QUEL SERVICE peut annuler une commande.
+// La date d'annulation lance le compte à rebours de purge (30 jours).
+router.post('/orders/:id/cancel', authorize(
+  'confirmatrice', 'designer', 'insolation', 'production', 'emballage', 'chef_production',
+), async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
-    order.pipeline.stage = 'annulee'
+    order.pipeline.stage        = 'annulee'
+    order.pipeline.cancelledAt  = new Date()
+    order.pipeline.cancelledBy  = req.user?.username || ''
+    order.pipeline.cancelledRole = req.user?.role || ''
     order.status = 'annulé'
     pushHistory(order, 'annulee', req, req.body.reason || 'Commande annulée')
     await order.save()
@@ -563,6 +704,9 @@ router.get('/insolation', authorize('insolation'), async (req, res) => {
         { 'pipeline.stage': { $in: ['production', 'emballage', 'livraison'] } },
       ],
       'pipeline.stage': { $nin: ['annulee', 'termine'] },
+      // Dès que la production déclare la fabrication terminée, la commande
+      // quitte l'insolation : le service suivant a pris le relais.
+      'pipeline.producedAt': null,
     }
     // en_attente couvre aussi les commandes antérieures (champ absent)
     filter['pipeline.insolation.status'] = status === 'confirme'
@@ -590,6 +734,9 @@ router.get('/insolation/counts', authorize('insolation'), async (req, res) => {
         { 'pipeline.stage': { $in: ['production', 'emballage', 'livraison'] } },
       ],
       'pipeline.stage': { $nin: ['annulee', 'termine'] },
+      // Dès que la production déclare la fabrication terminée, la commande
+      // quitte l'insolation : le service suivant a pris le relais.
+      'pipeline.producedAt': null,
     }
     const [enAttente, confirme] = await Promise.all([
       Order.countDocuments({ ...base, 'pipeline.insolation.status': { $ne: 'confirme' } }),
@@ -787,6 +934,11 @@ const STATUS_TO_STAGE = {
 }
 const VALID_STATUSES = Object.keys(STATUS_TO_STAGE)
 
+/* Une commande quitte la vue de la confirmatrice dès que le DESIGNER a
+   déclaré son travail terminé : le service suivant a pris le relais. Elle
+   reste évidemment consultable dans l'historique. */
+const PAS_ENCORE_CHEZ_LE_DESIGNER = { 'pipeline.designValidated': { $ne: true } }
+
 // GET /confirmation — liste des commandes gérées par la confirmatrice
 //   ?status=en attente|confirmé|annulé   ?q=recherche   ?limit=
 router.get('/confirmation', authorize('confirmatrice'), async (req, res) => {
@@ -794,7 +946,7 @@ router.get('/confirmation', authorize('confirmatrice'), async (req, res) => {
     const { status, q } = req.query
     const limit = Math.min(parseInt(req.query.limit) || 100, 300)
 
-    const filter = {}
+    const filter = { ...PAS_ENCORE_CHEZ_LE_DESIGNER }
     // « nouveau » = arrivée du site, pas encore traitée par la confirmatrice.
     // Les statuts, eux, sont des DÉCISIONS : « en attente » n'est donc pas
     // l'état par défaut d'une commande, mais un choix explicite.
@@ -841,12 +993,13 @@ router.get('/confirmation/counts', authorize('confirmatrice'), async (req, res) 
       // Les compteurs de statut ne comptent que les décisions de la
       // confirmatrice, pas les commandes qui viennent d'arriver du site.
       Order.aggregate([
-        { $match: { 'pipeline.statusSetAt': { $ne: null } } },
+        { $match: { 'pipeline.statusSetAt': { $ne: null }, ...PAS_ENCORE_CHEZ_LE_DESIGNER } },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]),
-      Order.countDocuments({ 'pipeline.statusSetAt': null }),
+      Order.countDocuments({ 'pipeline.statusSetAt': null, ...PAS_ENCORE_CHEZ_LE_DESIGNER }),
       // Nombre de commandes portant chaque étiquette
       Order.aggregate([
+        { $match: PAS_ENCORE_CHEZ_LE_DESIGNER },
         { $unwind: '$pipeline.customTags' },
         { $group: { _id: '$pipeline.customTags', count: { $sum: 1 } } },
       ]),

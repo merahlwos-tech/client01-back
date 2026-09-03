@@ -110,6 +110,12 @@ const pipelineSchema = new mongoose.Schema({
   // Expédition
   deliveredAt:     { type: Date, default: null },
 
+  // Annulation — n'importe quel service peut annuler une commande.
+  // La date sert de point de départ à la purge (30 jours).
+  cancelledAt:     { type: Date,   default: null },
+  cancelledBy:     { type: String, default: '' },
+  cancelledRole:   { type: String, default: '' },
+
   // Fil de notes partagé : chaque service peut en ajouter, tous les voient
   notes: { type: [noteSchema], default: [] },
 
