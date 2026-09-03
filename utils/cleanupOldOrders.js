@@ -69,15 +69,19 @@ async function deleteOrdersByIds(ids) {
 async function cleanupOldOrders() {
   if (!RETENTION_DAYS || RETENTION_DAYS <= 0) return { skipped: true }
 
-  /* Commandes annulées : le point de départ est la date d'annulation. Les
-     annulations antérieures à ce champ retombent sur la date de création. */
+  /* Commandes annulées : le compte à rebours part de la date d'annulation.
+     Une annulation antérieure à ce champ n'en a pas — on la DATE au lieu de
+     la supprimer, sinon une règle nouvelle effacerait rétroactivement tout
+     un historique dès sa mise en service. */
+  await Order.updateMany(
+    { 'pipeline.stage': 'annulee', 'pipeline.cancelledAt': null },
+    [{ $set: { 'pipeline.cancelledAt': { $ifNull: ['$updatedAt', '$$NOW'] } } }],
+  )
+
   const cancelled = CANCELLED_RETENTION_DAYS > 0
     ? await deleteOrdersWhere({
         'pipeline.stage': 'annulee',
-        $or: [
-          { 'pipeline.cancelledAt': { $ne: null, $lt: daysAgo(CANCELLED_RETENTION_DAYS) } },
-          { 'pipeline.cancelledAt': null, createdAt: { $lt: daysAgo(CANCELLED_RETENTION_DAYS) } },
-        ],
+        'pipeline.cancelledAt': { $ne: null, $lt: daysAgo(CANCELLED_RETENTION_DAYS) },
       })
     : { deleted: 0, files: 0 }
 
