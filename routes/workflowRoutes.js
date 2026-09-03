@@ -426,19 +426,27 @@ router.get('/orders/counters', async (req, res) => {
 
     const notSlow = { $ne: 'reponses_lentes' }
 
-    const [aTraiter, validees, enProduction, slow, duJour, enRetard] = await Promise.all([
+    const [aTraiter, validees, enProduction, enInsolation, slow, duJour, enRetard] = await Promise.all([
       // chez le designer, pas encore validées
       Order.countDocuments({ 'pipeline.stage': 'design', 'pipeline.designValidated': { $ne: true }, 'pipeline.designerTag': notSlow }),
       // validées mais pas encore envoyées
       Order.countDocuments({ 'pipeline.stage': 'design', 'pipeline.designValidated': true, 'pipeline.designerTag': notSlow }),
-      // envoyées en production, pas encore traitées
+      // planning complet de la production (vue du chef)
       Order.countDocuments({ 'pipeline.stage': 'production' }),
+      /* Vue « envoyées » du designer : même règle que sa liste — la commande
+         en sort dès que l'insolation confirme ou que la production fabrique.
+         Sans ce compteur dédié, l'onglet annoncerait des commandes absentes. */
+      Order.countDocuments({
+        'pipeline.stage': 'production',
+        'pipeline.insolation.status': { $ne: 'confirme' },
+        'pipeline.producedAt': null,
+      }),
       Order.countDocuments({ 'pipeline.stage': 'design', 'pipeline.designerTag': 'reponses_lentes' }),
       date ? Order.countDocuments({ 'pipeline.stage': 'production', 'pipeline.productionDate': date }) : 0,
       date ? Order.countDocuments({ 'pipeline.stage': 'production', 'pipeline.productionDate': { $lt: date, $ne: '' } }) : 0,
     ])
 
-    res.json({ aTraiter, validees, enProduction, slow, duJour, enRetard })
+    res.json({ aTraiter, validees, enProduction, enInsolation, slow, duJour, enRetard })
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })
   }
