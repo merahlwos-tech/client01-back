@@ -1057,6 +1057,20 @@ router.patch('/orders/:id/status', authorize('confirmatrice'), async (req, res) 
       if (!wasConfirmed) startCountdown(order)
     }
 
+    /* L'annulation lance le compte à rebours de purge (30 jours). Un
+       retour en arrière l'efface : la commande n'est plus condamnée. */
+    if (status === 'annulé') {
+      if (!order.pipeline.cancelledAt) {
+        order.pipeline.cancelledAt   = new Date()
+        order.pipeline.cancelledBy   = req.user?.username || ''
+        order.pipeline.cancelledRole = req.user?.role || ''
+      }
+    } else {
+      order.pipeline.cancelledAt   = null
+      order.pipeline.cancelledBy   = ''
+      order.pipeline.cancelledRole = ''
+    }
+
     pushHistory(order, nextStage, req, `Statut → ${status}`)
     await order.save()
     res.json(order)
