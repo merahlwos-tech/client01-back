@@ -91,6 +91,251 @@ router.get('/stats', async (req, res) => {
   }
 })
 
+/* ══════════════════════════════════════════════════════════════
+   TABLEAU DE BORD — chef de production et superadmin
+   Des indicateurs qui servent à DÉCIDER : où ça bloque, tient-on
+   les délais, que consomme l'atelier, que faut-il racheter.
+══════════════════════════════════════════════════════════════ */
+
+const HOUR = 3600000
+
+/* Écart en heures entre deux étapes ; null si l'une des deux manque,
+   ce qui exclut la commande de la moyenne au lieu de la fausser. */
+const hoursBetween = (from, to) => ({
+  $cond: [
+    { $and: [{ $ne: [`$${from}`, null] }, { $ne: [`$${to}`, null] }] },
+    { $divide: [{ $subtract: [`$${to}`, `$${from}`] }, HOUR] },
+    null,
+  ],
+})
+
+// GET /api/workflow/dashboard?days=30&tz=+01:00
+router.get('/dashboard', authorize('chef_production'), async (req, res) => {
+  try {
+    const days  = Math.min(365, Math.max(1, Number(req.query.days) || 30))
+    const since = new Date(Date.now() - days * 86400000)
+    const now   = new Date()
+    const tz = /^[+-]\d{2}:\d{2}$/.test(String(req.query.tz || '')) ? req.query.tz : '+00:00'
+
+    // Le regroupement par jour se fait dans le fuseau de l'atelier
+    const day = (expr) => ({ $dateToString: { format: '%Y-%m-%d', date: expr, timezone: tz } })
+    const done = (field) => ({ [field]: { $ne: null, $gte: since } })
+
+    /* Les jours « YYYY-MM-DD » côté serveur doivent tomber sur le même
+       découpage que $dateToString, sinon la courbe décalerait d'un jour. */
+    const tzMin = (() => {
+      const m = /^([+-])(\d{2}):(\d{2})$/.exec(tz)
+      return m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : 0
+    })()
+    const dateStr = (d) => new Date(d.getTime() + tzMin * 60000).toISOString().slice(0, 10)
+
+    // Fenêtre de charge : les 14 prochains jours de fabrication
+    const chargeFrom = dateStr(now)
+    const chargeTo   = dateStr(new Date(now.getTime() + 14 * 86400000))
+
+    const [
+      recues, confirmees, annulees, fabriquees, livrees,
+      piecesAgg, caAgg, delaisAgg, respectAgg, parEtape,
+      topProduits, topWilayas, consoAgg, serieAgg, chargeAgg, materials,
+    ] = await Promise.all([
+      // ── Flux de la période ──
+      Order.countDocuments({ createdAt: { $gte: since } }),
+      Order.countDocuments(done('pipeline.confirmedAt')),
+      Order.countDocuments(done('pipeline.cancelledAt')),
+      Order.countDocuments(done('pipeline.producedAt')),
+      Order.countDocuments(done('pipeline.deliveredAt')),
+
+      // Pièces réellement sorties de l'atelier
+      Order.aggregate([
+        { $match: done('pipeline.producedAt') },
+        { $group: { _id: null, pieces: { $sum: { $sum: '$items.quantity' } } } },
+      ]),
+
+      // Chiffre d'affaires des commandes confirmées
+      Order.aggregate([
+        { $match: { ...done('pipeline.confirmedAt'), status: { $ne: 'annulé' } } },
+        { $group: { _id: null, ca: { $sum: '$total' }, n: { $sum: 1 } } },
+      ]),
+
+      // ── Temps passé à chaque étape (moyenne, en heures) ──
+      Order.aggregate([
+        { $match: done('pipeline.confirmedAt') },
+        { $project: {
+          confirmationDesign: hoursBetween('pipeline.confirmedAt', 'pipeline.designValidatedAt'),
+          designEnvoi:        hoursBetween('pipeline.designValidatedAt', 'pipeline.sentToProductionAt'),
+          envoiFabrication:   hoursBetween('pipeline.sentToProductionAt', 'pipeline.producedAt'),
+          fabricationEmballage: hoursBetween('pipeline.producedAt', 'pipeline.packagedAt'),
+          emballageLivraison: hoursBetween('pipeline.packagedAt', 'pipeline.deliveredAt'),
+          bout:               hoursBetween('pipeline.confirmedAt', 'pipeline.deliveredAt'),
+        } },
+        { $group: {
+          _id: null,
+          confirmationDesign:   { $avg: '$confirmationDesign' },
+          designEnvoi:          { $avg: '$designEnvoi' },
+          envoiFabrication:     { $avg: '$envoiFabrication' },
+          fabricationEmballage: { $avg: '$fabricationEmballage' },
+          emballageLivraison:   { $avg: '$emballageLivraison' },
+          bout:                 { $avg: '$bout' },
+        } },
+      ]),
+
+      // ── Respect du délai promis (6 jours) ──
+      Order.aggregate([
+        { $match: { ...done('pipeline.producedAt'), 'pipeline.deadlineAt': { $ne: null } } },
+        { $group: {
+          _id: null,
+          total:  { $sum: 1 },
+          aTemps: { $sum: { $cond: [{ $lte: ['$pipeline.producedAt', '$pipeline.deadlineAt'] }, 1, 0] } },
+        } },
+      ]),
+
+      // ── Où sont les commandes en cours, et lesquelles souffrent ──
+      Order.aggregate([
+        { $match: { 'pipeline.stage': { $nin: ['termine', 'annulee'] } } },
+        { $group: {
+          _id:      '$pipeline.stage',
+          total:    { $sum: 1 },
+          enRetard: { $sum: { $cond: [
+            { $and: [{ $ne: ['$pipeline.deadlineAt', null] }, { $lt: ['$pipeline.deadlineAt', now] }] }, 1, 0] } },
+          urgentes: { $sum: { $cond: [
+            { $in: ['$pipeline.urgency', ['urgent', 'tres_urgent']] }, 1, 0] } },
+          plusAncienne: { $min: '$createdAt' },
+        } },
+      ]),
+
+      // ── Ce qui se vend ──
+      Order.aggregate([
+        { $match: { createdAt: { $gte: since }, status: { $ne: 'annulé' } } },
+        { $unwind: '$items' },
+        { $group: {
+          _id:       '$items.name',
+          pieces:    { $sum: '$items.quantity' },
+          commandes: { $sum: 1 },
+          ca:        { $sum: { $multiply: ['$items.price', '$items.quantity'] } },
+        } },
+        { $sort: { pieces: -1 } },
+        { $limit: 6 },
+      ]),
+
+      // ── Où ça livre ──
+      Order.aggregate([
+        { $match: { createdAt: { $gte: since }, status: { $ne: 'annulé' } } },
+        { $group: { _id: '$customerInfo.wilaya', commandes: { $sum: 1 }, ca: { $sum: '$total' } } },
+        { $sort: { commandes: -1 } },
+        { $limit: 6 },
+      ]),
+
+      // ── Matières consommées par la production ──
+      Order.aggregate([
+        { $match: done('pipeline.producedAt') },
+        { $unwind: '$pipeline.materialsUsed' },
+        { $group: {
+          _id:      { $ifNull: ['$pipeline.materialsUsed.material', '$pipeline.materialsUsed.name'] },
+          nom:      { $first: '$pipeline.materialsUsed.name' },
+          consomme: { $sum: '$pipeline.materialsUsed.quantity' },
+        } },
+        { $sort: { consomme: -1 } },
+      ]),
+
+      // ── Courbe jour par jour ──
+      Order.aggregate([{ $facet: {
+        recues:     [{ $match: { createdAt: { $gte: since } } },
+                     { $group: { _id: day('$createdAt'), n: { $sum: 1 } } }],
+        confirmees: [{ $match: done('pipeline.confirmedAt') },
+                     { $group: { _id: day('$pipeline.confirmedAt'), n: { $sum: 1 } } }],
+        fabriquees: [{ $match: done('pipeline.producedAt') },
+                     { $group: { _id: day('$pipeline.producedAt'), n: { $sum: 1 } } }],
+      } }]),
+
+      // ── Charge de fabrication à venir ──
+      Order.aggregate([
+        { $match: {
+          'pipeline.stage': 'production',
+          'pipeline.productionDate': { $gte: chargeFrom, $lte: chargeTo },
+        } },
+        { $group: {
+          _id:    '$pipeline.productionDate',
+          total:  { $sum: 1 },
+          pieces: { $sum: { $sum: '$items.quantity' } },
+          urgent: { $sum: { $cond: [
+            { $in: ['$pipeline.urgency', ['urgent', 'tres_urgent']] }, 1, 0] } },
+        } },
+        { $sort: { _id: 1 } },
+      ]),
+
+      RawMaterial.find().select('name quantity unit lowStockThreshold').lean(),
+    ])
+
+    /* Couverture du stock : au rythme des dernières semaines, combien de
+       jours tient chaque matière ? C'est le signal de réappro du chef. */
+    const consoParId = new Map(consoAgg.map(c => [String(c._id), c]))
+    const stock = materials.map(m => {
+      const c = consoParId.get(String(m._id)) || consoParId.get(m.name)
+      const consomme = c?.consomme || 0
+      const parJour  = consomme / days
+      return {
+        name: m.name, unit: m.unit, quantity: m.quantity,
+        lowStockThreshold: m.lowStockThreshold,
+        consomme,
+        parJour: Math.round(parJour * 100) / 100,
+        // null = aucune consommation mesurée, donc pas de projection possible
+        couvertureJours: parJour > 0 ? Math.floor(m.quantity / parJour) : null,
+      }
+    }).sort((a, b) => {
+      const ca = a.couvertureJours, cb = b.couvertureJours
+      if (ca == null && cb == null) return b.consomme - a.consomme
+      if (ca == null) return 1
+      if (cb == null) return -1
+      return ca - cb                       // les plus tendus en premier
+    })
+
+    // Fusion des trois courbes en une seule série continue
+    const serie = []
+    const f = serieAgg[0] || {}
+    const parJour = {}
+    const put = (rows, key) => (rows || []).forEach(r => {
+      parJour[r._id] = { ...(parJour[r._id] || {}), [key]: r.n }
+    })
+    put(f.recues, 'recues'); put(f.confirmees, 'confirmees'); put(f.fabriquees, 'fabriquees')
+    for (let i = days - 1; i >= 0; i--) {
+      const key = dateStr(new Date(now.getTime() - i * 86400000))
+      serie.push({ date: key, recues: 0, confirmees: 0, fabriquees: 0, ...(parJour[key] || {}) })
+    }
+
+    const etapes = {}
+    parEtape.forEach(e => { if (e._id) etapes[e._id] = e })
+
+    const ca      = caAgg[0]?.ca || 0
+    const nbCa    = caAgg[0]?.n  || 0
+    const respect = respectAgg[0] || { total: 0, aTemps: 0 }
+
+    res.json({
+      periodeJours: days,
+      flux: {
+        recues, confirmees, annulees, fabriquees, livrees,
+        pieces: piecesAgg[0]?.pieces || 0,
+        ca,
+        panierMoyen: nbCa ? Math.round(ca / nbCa) : 0,
+        // Une commande tranchée sur deux : confirmée ou annulée
+        tauxConfirmation: (confirmees + annulees)
+          ? Math.round((confirmees / (confirmees + annulees)) * 100) : null,
+      },
+      delais: delaisAgg[0] || null,
+      respectDelai: {
+        total: respect.total, aTemps: respect.aTemps,
+        taux: respect.total ? Math.round((respect.aTemps / respect.total) * 100) : null,
+      },
+      etapes,
+      topProduits, topWilayas,
+      stock,
+      serie,
+      charge: chargeAgg.map(c => ({ date: c._id, total: c.total, pieces: c.pieces, urgent: c.urgent })),
+    })
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
 // Priorité d'affichage : les plus urgentes d'abord
 const URGENCY_RANK = { tres_urgent: 0, urgent: 1, normal: 2 }
 
