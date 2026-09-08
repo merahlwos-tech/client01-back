@@ -6,7 +6,7 @@ const Order         = require('../models/Order')
 const RawMaterial   = require('../models/RawMaterial')
 const StockMovement = require('../models/StockMovement')
 const { sendToEcotrack } = require('../utils/ecotrack')
-const { deleteOrdersByIds, CANCELLED_RETENTION_DAYS } = require('../utils/cleanupOldOrders')
+const { CANCELLED_RETENTION_DAYS } = require('../utils/cleanupOldOrders')
 const { authenticateUser, authorize, isSuperadmin } = require('../middleware/auth')
 
 // Un vrai superadmin peut passer outre les garde-fous metier (sauter une
@@ -26,6 +26,11 @@ const canForce = (req) =>
 
 
 router.use(authenticateUser)
+
+/* Commande « vivante » : pas encore retirée par un service. Toutes les listes
+   de travail et tous les compteurs partent de là. L'historique et la recherche
+   sont les deux seuls endroits qui montrent aussi les commandes retirées. */
+const VIVANTE = { 'pipeline.deletedAt': null }
 
 // Qui AGIT sur chaque étape (peut la faire avancer)
 const STAGE_ACTOR = {
@@ -80,6 +85,7 @@ const guardStage = (order, expectedStage, req, res) => {
 router.get('/stats', async (req, res) => {
   try {
     const agg = await Order.aggregate([
+      { $match: VIVANTE },
       { $group: { _id: '$pipeline.stage', count: { $sum: 1 } } },
     ])
     const byStage = { confirmation: 0, design: 0, production: 0, emballage: 0, livraison: 0, termine: 0, annulee: 0 }
@@ -119,7 +125,8 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
 
     // Le regroupement par jour se fait dans le fuseau de l'atelier
     const day = (expr) => ({ $dateToString: { format: '%Y-%m-%d', date: expr, timezone: tz } })
-    const done = (field) => ({ [field]: { $ne: null, $gte: since } })
+    // Une commande retirée par un service ne pèse plus dans les indicateurs
+    const done = (field) => ({ ...VIVANTE, [field]: { $ne: null, $gte: since } })
 
     /* Les jours « YYYY-MM-DD » côté serveur doivent tomber sur le même
        découpage que $dateToString, sinon la courbe décalerait d'un jour. */
@@ -139,7 +146,7 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
       topProduits, topWilayas, consoAgg, serieAgg, chargeAgg, materials,
     ] = await Promise.all([
       // ── Flux de la période ──
-      Order.countDocuments({ createdAt: { $gte: since } }),
+      Order.countDocuments({ ...VIVANTE, createdAt: { $gte: since } }),
       Order.countDocuments(done('pipeline.confirmedAt')),
       Order.countDocuments(done('pipeline.cancelledAt')),
       Order.countDocuments(done('pipeline.producedAt')),
@@ -191,7 +198,7 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
 
       // ── Où sont les commandes en cours, et lesquelles souffrent ──
       Order.aggregate([
-        { $match: { 'pipeline.stage': { $nin: ['termine', 'annulee'] } } },
+        { $match: { ...VIVANTE, 'pipeline.stage': { $nin: ['termine', 'annulee'] } } },
         { $group: {
           _id:      '$pipeline.stage',
           total:    { $sum: 1 },
@@ -205,7 +212,7 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
 
       // ── Ce qui se vend ──
       Order.aggregate([
-        { $match: { createdAt: { $gte: since }, status: { $ne: 'annulé' } } },
+        { $match: { ...VIVANTE, createdAt: { $gte: since }, status: { $ne: 'annulé' } } },
         { $unwind: '$items' },
         { $group: {
           _id:       '$items.name',
@@ -219,7 +226,7 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
 
       // ── Où ça livre ──
       Order.aggregate([
-        { $match: { createdAt: { $gte: since }, status: { $ne: 'annulé' } } },
+        { $match: { ...VIVANTE, createdAt: { $gte: since }, status: { $ne: 'annulé' } } },
         { $group: { _id: '$customerInfo.wilaya', commandes: { $sum: 1 }, ca: { $sum: '$total' } } },
         { $sort: { commandes: -1 } },
         { $limit: 6 },
@@ -239,7 +246,7 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
 
       // ── Courbe jour par jour ──
       Order.aggregate([{ $facet: {
-        recues:     [{ $match: { createdAt: { $gte: since } } },
+        recues:     [{ $match: { ...VIVANTE, createdAt: { $gte: since } } },
                      { $group: { _id: day('$createdAt'), n: { $sum: 1 } } }],
         confirmees: [{ $match: done('pipeline.confirmedAt') },
                      { $group: { _id: day('$pipeline.confirmedAt'), n: { $sum: 1 } } }],
@@ -250,6 +257,7 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
       // ── Charge de fabrication à venir ──
       Order.aggregate([
         { $match: {
+          ...VIVANTE,
           'pipeline.stage': 'production',
           'pipeline.productionDate': { $gte: chargeFrom, $lte: chargeTo },
         } },
@@ -367,7 +375,7 @@ router.get('/orders', async (req, res) => {
       return res.status(403).json({ message: 'Accès refusé à cette étape' })
     }
 
-    const filter = { 'pipeline.stage': stage }
+    const filter = { ...VIVANTE, 'pipeline.stage': stage }
 
     // Les commandes marquées « réponses lentes » sont mises de côté :
     // elles n'apparaissent que dans la liste dédiée. ($ne couvre aussi
@@ -420,6 +428,7 @@ router.get('/orders/slow-count', async (req, res) => {
   try {
     const stage = req.query.stage || 'design'
     const count = await Order.countDocuments({
+      ...VIVANTE,
       'pipeline.stage': stage,
       'pipeline.designerTag': 'reponses_lentes',
     })
@@ -475,17 +484,22 @@ router.get('/search', async (req, res) => {
 })
 
 /* ══════════════════════════════════════════════════════════════
-   SUPPRESSION MANUELLE
-   La confirmatrice et le designer peuvent supprimer les commandes
-   qu'ils sélectionnent. C'est DÉFINITIF (logos compris).
+   RETRAIT MANUEL
+   Un service retire de sa vue les commandes qu'il sélectionne.
+   Rien n'est effacé : la commande quitte les listes de travail de
+   TOUS les services mais reste dans l'historique et reste trouvable
+   par la recherche. Seule la purge automatique efface pour de bon,
+   une fois le délai de rétention écoulé.
 ══════════════════════════════════════════════════════════════ */
+const parseIds = (body) => (Array.isArray(body?.ids) ? body.ids : [])
+  .filter(id => /^[0-9a-fA-F]{24}$/.test(String(id)))
+
 // POST /api/workflow/orders/bulk-delete  { ids: [...] }
 router.post('/orders/bulk-delete', authorize(
   'confirmatrice', 'designer', 'chef_production',
 ), async (req, res) => {
   try {
-    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : [])
-      .filter(id => /^[0-9a-fA-F]{24}$/.test(String(id)))
+    const ids = parseIds(req.body)
     if (ids.length === 0) {
       return res.status(400).json({ message: 'Aucune commande sélectionnée' })
     }
@@ -493,9 +507,36 @@ router.post('/orders/bulk-delete', authorize(
       return res.status(400).json({ message: '100 commandes au maximum à la fois' })
     }
 
-    const result = await deleteOrdersByIds(ids)
-    console.log(`🗑️  [SUPPRESSION] ${result.deleted} commande(s) par ${req.user?.role || 'atelier'}`)
-    res.json(result)
+    const r = await Order.updateMany(
+      { _id: { $in: ids }, 'pipeline.deletedAt': null },
+      { $set: {
+        'pipeline.deletedAt':   new Date(),
+        'pipeline.deletedBy':   req.user?.username || '',
+        'pipeline.deletedFrom': req.user?.role || '',
+      } },
+    )
+    console.log(`🗄️  [RETRAIT] ${r.modifiedCount} commande(s) par ${req.user?.role || 'atelier'}`)
+    res.json({ deleted: r.modifiedCount, soft: true })
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+// POST /api/workflow/orders/bulk-restore  { ids: [...] } — annuler un retrait
+router.post('/orders/bulk-restore', authorize(
+  'confirmatrice', 'designer', 'chef_production',
+), async (req, res) => {
+  try {
+    const ids = parseIds(req.body)
+    if (ids.length === 0) {
+      return res.status(400).json({ message: 'Aucune commande sélectionnée' })
+    }
+
+    const r = await Order.updateMany(
+      { _id: { $in: ids } },
+      { $set: { 'pipeline.deletedAt': null, 'pipeline.deletedBy': '', 'pipeline.deletedFrom': '' } },
+    )
+    res.json({ restored: r.modifiedCount })
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })
   }
@@ -560,9 +601,12 @@ router.get('/history', async (req, res) => {
     const { from, to, days } = historyRange(req.query)
     const limit = Math.min(parseInt(req.query.limit) || 200, 500)
 
+    /* L'historique est le seul endroit, avec la recherche, qui montre aussi
+       les commandes retirées par un service : un retrait cache le travail
+       courant, il n'efface pas la trace. */
     const base = { [field]: { $ne: null, $gte: from, ...(to ? { $lte: to } : {}) } }
 
-    const [orders, parStatut] = await Promise.all([
+    const [orders, parStatut, retirees] = await Promise.all([
       Order.find(base)
         .populate('items.product', 'name images')
         .populate('pipeline.customTags')
@@ -573,9 +617,10 @@ router.get('/history', async (req, res) => {
         { $match: base },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]),
+      Order.countDocuments({ ...base, 'pipeline.deletedAt': { $ne: null } }),
     ])
 
-    const counts = { 'confirmé': 0, 'en attente': 0, 'annulé': 0, total: 0 }
+    const counts = { 'confirmé': 0, 'en attente': 0, 'annulé': 0, total: 0, retirees }
     parStatut.forEach(r => {
       if (r._id in counts) counts[r._id] = r.count
       counts.total += r.count
@@ -639,6 +684,7 @@ router.get('/production-planning', async (req, res) => {
     const agg = await Order.aggregate([
       {
         $match: {
+          ...VIVANTE,
           'pipeline.stage': 'production',
           'pipeline.productionDate': { $gte: from, $lte: to },
         },
@@ -673,22 +719,23 @@ router.get('/orders/counters', async (req, res) => {
 
     const [aTraiter, validees, enProduction, enInsolation, slow, duJour, enRetard] = await Promise.all([
       // chez le designer, pas encore validées
-      Order.countDocuments({ 'pipeline.stage': 'design', 'pipeline.designValidated': { $ne: true }, 'pipeline.designerTag': notSlow }),
+      Order.countDocuments({ ...VIVANTE, 'pipeline.stage': 'design', 'pipeline.designValidated': { $ne: true }, 'pipeline.designerTag': notSlow }),
       // validées mais pas encore envoyées
-      Order.countDocuments({ 'pipeline.stage': 'design', 'pipeline.designValidated': true, 'pipeline.designerTag': notSlow }),
+      Order.countDocuments({ ...VIVANTE, 'pipeline.stage': 'design', 'pipeline.designValidated': true, 'pipeline.designerTag': notSlow }),
       // planning complet de la production (vue du chef)
-      Order.countDocuments({ 'pipeline.stage': 'production' }),
+      Order.countDocuments({ ...VIVANTE, 'pipeline.stage': 'production' }),
       /* Vue « envoyées » du designer : même règle que sa liste — la commande
          en sort dès que l'insolation confirme ou que la production fabrique.
          Sans ce compteur dédié, l'onglet annoncerait des commandes absentes. */
       Order.countDocuments({
+        ...VIVANTE,
         'pipeline.stage': 'production',
         'pipeline.insolation.status': { $ne: 'confirme' },
         'pipeline.producedAt': null,
       }),
-      Order.countDocuments({ 'pipeline.stage': 'design', 'pipeline.designerTag': 'reponses_lentes' }),
-      date ? Order.countDocuments({ 'pipeline.stage': 'production', 'pipeline.productionDate': date }) : 0,
-      date ? Order.countDocuments({ 'pipeline.stage': 'production', 'pipeline.productionDate': { $lt: date, $ne: '' } }) : 0,
+      Order.countDocuments({ ...VIVANTE, 'pipeline.stage': 'design', 'pipeline.designerTag': 'reponses_lentes' }),
+      date ? Order.countDocuments({ ...VIVANTE, 'pipeline.stage': 'production', 'pipeline.productionDate': date }) : 0,
+      date ? Order.countDocuments({ ...VIVANTE, 'pipeline.stage': 'production', 'pipeline.productionDate': { $lt: date, $ne: '' } }) : 0,
     ])
 
     res.json({ aTraiter, validees, enProduction, enInsolation, slow, duJour, enRetard })
@@ -952,6 +999,7 @@ router.get('/insolation', authorize('insolation'), async (req, res) => {
        chez lui, ne doit donc pas apparaître ici.
        ($or couvre les commandes envoyées avant l'ajout de sentToProductionAt) */
     const filter = {
+      ...VIVANTE,
       $or: [
         { 'pipeline.sentToProductionAt': { $ne: null } },
         { 'pipeline.stage': { $in: ['production', 'emballage', 'livraison'] } },
@@ -982,6 +1030,7 @@ router.get('/insolation/counts', authorize('insolation'), async (req, res) => {
   try {
     // Même règle que la liste : la commande doit avoir été envoyée
     const base = {
+      ...VIVANTE,
       $or: [
         { 'pipeline.sentToProductionAt': { $ne: null } },
         { 'pipeline.stage': { $in: ['production', 'emballage', 'livraison'] } },
@@ -1199,7 +1248,7 @@ router.get('/confirmation', authorize('confirmatrice'), async (req, res) => {
     const { status, q } = req.query
     const limit = Math.min(parseInt(req.query.limit) || 100, 300)
 
-    const filter = { ...PAS_ENCORE_CHEZ_LE_DESIGNER }
+    const filter = { ...VIVANTE, ...PAS_ENCORE_CHEZ_LE_DESIGNER }
     // « nouveau » = arrivée du site, pas encore traitée par la confirmatrice.
     // Les statuts, eux, sont des DÉCISIONS : « en attente » n'est donc pas
     // l'état par défaut d'une commande, mais un choix explicite.
@@ -1246,13 +1295,13 @@ router.get('/confirmation/counts', authorize('confirmatrice'), async (req, res) 
       // Les compteurs de statut ne comptent que les décisions de la
       // confirmatrice, pas les commandes qui viennent d'arriver du site.
       Order.aggregate([
-        { $match: { 'pipeline.statusSetAt': { $ne: null }, ...PAS_ENCORE_CHEZ_LE_DESIGNER } },
+        { $match: { ...VIVANTE, 'pipeline.statusSetAt': { $ne: null }, ...PAS_ENCORE_CHEZ_LE_DESIGNER } },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]),
-      Order.countDocuments({ 'pipeline.statusSetAt': null, ...PAS_ENCORE_CHEZ_LE_DESIGNER }),
+      Order.countDocuments({ ...VIVANTE, 'pipeline.statusSetAt': null, ...PAS_ENCORE_CHEZ_LE_DESIGNER }),
       // Nombre de commandes portant chaque étiquette
       Order.aggregate([
-        { $match: PAS_ENCORE_CHEZ_LE_DESIGNER },
+        { $match: { ...VIVANTE, ...PAS_ENCORE_CHEZ_LE_DESIGNER } },
         { $unwind: '$pipeline.customTags' },
         { $group: { _id: '$pipeline.customTags', count: { $sum: 1 } } },
       ]),

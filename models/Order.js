@@ -130,6 +130,14 @@ const pipelineSchema = new mongoose.Schema({
   // Assignations / auteurs par étape (facultatif, pour affichage)
   confirmedBy:     { type: String, default: '' },
 
+  /* Retrait par un service. La commande sort de TOUTES les listes de travail
+     mais reste consultable dans l'historique et par la recherche : personne
+     ne doit pouvoir effacer une trace d'un simple clic. La purge automatique
+     s'en charge, elle, une fois le délai de rétention écoulé. */
+  deletedAt:   { type: Date,   default: null },
+  deletedBy:   { type: String, default: '' },
+  deletedFrom: { type: String, default: '' },   // service qui l'a retirée
+
   // Horodatage de la décision de la confirmatrice. Tant qu'il est nul, la
   // commande est « nouvelle » : elle attend d'être traitée et figure dans
   // l'onglet « Commandes ». Dès qu'un statut est posé, elle en sort.
@@ -180,6 +188,8 @@ orderSchema.index({ tags: 1 })
 orderSchema.index({ 'pipeline.stage': 1, createdAt: -1 })
 // La production interroge « les commandes à fabriquer aujourd'hui »
 orderSchema.index({ 'pipeline.stage': 1, 'pipeline.productionDate': 1 })
+// Toutes les listes de travail écartent les commandes retirées
+orderSchema.index({ 'pipeline.deletedAt': 1, 'pipeline.stage': 1 })
 
 module.exports = mongoose.model('Order', orderSchema)
 module.exports.PIPELINE_STAGES = PIPELINE_STAGES
