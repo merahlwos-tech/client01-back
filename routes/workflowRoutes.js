@@ -3,7 +3,6 @@
 const express       = require('express')
 const router        = express.Router()
 const Order         = require('../models/Order')
-const RawMaterial   = require('../models/RawMaterial')
 const { sendToEcotrack } = require('../utils/ecotrack')
 const { CANCELLED_RETENTION_DAYS } = require('../utils/cleanupOldOrders')
 const { authenticateUser, authorize, isSuperadmin } = require('../middleware/auth')
@@ -154,7 +153,7 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
     const [
       recues, confirmees, annulees, fabriquees, livrees,
       piecesAgg, caAgg, delaisAgg, respectAgg, parEtape,
-      topProduits, topWilayas, consoAgg, serieAgg, chargeAgg, materials,
+      topProduits, topWilayas, serieAgg, chargeAgg,
     ] = await Promise.all([
       // ── Flux de la période ──
       Order.countDocuments({ ...VIVANTE, createdAt: { $gte: since } }),
@@ -243,18 +242,6 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
         { $limit: 6 },
       ]),
 
-      // ── Matières consommées par la production ──
-      Order.aggregate([
-        { $match: done('pipeline.producedAt') },
-        { $unwind: '$pipeline.materialsUsed' },
-        { $group: {
-          _id:      { $ifNull: ['$pipeline.materialsUsed.material', '$pipeline.materialsUsed.name'] },
-          nom:      { $first: '$pipeline.materialsUsed.name' },
-          consomme: { $sum: '$pipeline.materialsUsed.quantity' },
-        } },
-        { $sort: { consomme: -1 } },
-      ]),
-
       // ── Courbe jour par jour ──
       Order.aggregate([{ $facet: {
         recues:     [{ $match: { ...VIVANTE, createdAt: { $gte: since } } },
@@ -281,50 +268,7 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
         } },
         { $sort: { _id: 1 } },
       ]),
-
-      RawMaterial.find().select('name quantity unit lowStockThreshold').lean(),
     ])
-
-    /* Couverture du stock : au rythme des dernières semaines, combien de
-       jours tient chaque matière ? C'est le signal de réappro du chef. */
-    const consoParId = new Map(consoAgg.map(c => [String(c._id), c]))
-    const stock = materials.map(m => {
-      const c = consoParId.get(String(m._id)) || consoParId.get(m.name)
-      const consomme = c?.consomme || 0
-      const parJour  = consomme / days
-      return {
-        name: m.name, unit: m.unit, quantity: m.quantity,
-        lowStockThreshold: m.lowStockThreshold,
-        consomme,
-        parJour: Math.round(parJour * 100) / 100,
-        // null = aucune consommation mesurée, donc pas de projection possible
-        couvertureJours: parJour > 0 ? Math.floor(m.quantity / parJour) : null,
-      }
-    }).sort((a, b) => {
-      const ca = a.couvertureJours, cb = b.couvertureJours
-      if (ca == null && cb == null) return b.consomme - a.consomme
-      if (ca == null) return 1
-      if (cb == null) return -1
-      return ca - cb                       // les plus tendus en premier
-    })
-
-    /* Matières déclarées par la production mais absentes du stock : renommées,
-       supprimées, ou jamais créées. Sans elles, la consommation réelle
-       disparaîtrait de l'écran et toutes les lignes afficheraient « pas de
-       conso » alors que l'atelier consomme bel et bien. */
-    const connues = new Set()
-    materials.forEach(m => { connues.add(String(m._id)); connues.add(m.name) })
-    consoAgg.forEach(c => {
-      if (connues.has(String(c._id)) || connues.has(c.nom)) return
-      stock.push({
-        name: c.nom || String(c._id), unit: '', quantity: null,
-        lowStockThreshold: null,
-        consomme: c.consomme,
-        parJour: Math.round((c.consomme / days) * 100) / 100,
-        couvertureJours: null,
-        absente: true,
-      })
-    })
 
     // Fusion des trois courbes en une seule série continue
     const serie = []
@@ -364,7 +308,6 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
       },
       etapes,
       topProduits, topWilayas,
-      stock,
       serie,
       charge: chargeAgg.map(c => ({ date: c._id, total: c.total, pieces: c.pieces, urgent: c.urgent })),
     })
