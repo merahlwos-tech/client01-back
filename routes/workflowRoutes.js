@@ -4,7 +4,6 @@ const express       = require('express')
 const router        = express.Router()
 const Order         = require('../models/Order')
 const RawMaterial   = require('../models/RawMaterial')
-const StockMovement = require('../models/StockMovement')
 const { sendToEcotrack } = require('../utils/ecotrack')
 const { CANCELLED_RETENTION_DAYS } = require('../utils/cleanupOldOrders')
 const { authenticateUser, authorize, isSuperadmin } = require('../middleware/auth')
@@ -1150,39 +1149,19 @@ router.patch('/orders/:id/designer-tag', authorize('designer'), async (req, res)
 })
 
 // POST /orders/:id/produce — production : production → emballage
-// body: { materialsUsed: [{ material, quantity }], notes }
-// Décrémente le stock et journalise la consommation.
+// body: { notes }
+// La production ne déclare plus les matières consommées : le stock ne varie
+// donc que par les mouvements saisis par le chef sur la page Stock.
 router.post('/orders/:id/produce', authorize('production'), async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
     if (!guardStage(order, 'production', req, res)) return
 
-    const raw = Array.isArray(req.body.materialsUsed) ? req.body.materialsUsed : []
-    const used = raw
-      .map(m => ({ material: m.material, quantity: Number(m.quantity) }))
-      .filter(m => m.material && m.quantity > 0)
-
-    // Applique la consommation au stock + journalise
-    const applied = []
-    for (const u of used) {
-      const material = await RawMaterial.findById(u.material)
-      if (!material) continue
-      material.quantity = Math.max(0, material.quantity - u.quantity)
-      await material.save()
-      await StockMovement.create({
-        material: material._id, materialName: material.name,
-        type: 'out', quantity: u.quantity, order: order._id,
-        by: req.user?.username || '', note: 'Consommation production',
-      })
-      applied.push({ material: material._id, name: material.name, quantity: u.quantity })
-    }
-
-    order.pipeline.materialsUsed   = applied
     order.pipeline.producedAt      = new Date()
     order.pipeline.productionNotes = req.body.notes || ''
     order.pipeline.stage = 'emballage'
-    pushHistory(order, 'emballage', req, `Fabrication terminée (${applied.length} matière(s) consommée(s)) → emballage`)
+    pushHistory(order, 'emballage', req, 'Fabrication terminée → emballage')
     await order.save()
     res.json(order)
   } catch (err) {
