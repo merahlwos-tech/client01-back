@@ -309,6 +309,24 @@ router.get('/dashboard', authorize('chef_production'), async (req, res) => {
       return ca - cb                       // les plus tendus en premier
     })
 
+    /* Matières déclarées par la production mais absentes du stock : renommées,
+       supprimées, ou jamais créées. Sans elles, la consommation réelle
+       disparaîtrait de l'écran et toutes les lignes afficheraient « pas de
+       conso » alors que l'atelier consomme bel et bien. */
+    const connues = new Set()
+    materials.forEach(m => { connues.add(String(m._id)); connues.add(m.name) })
+    consoAgg.forEach(c => {
+      if (connues.has(String(c._id)) || connues.has(c.nom)) return
+      stock.push({
+        name: c.nom || String(c._id), unit: '', quantity: null,
+        lowStockThreshold: null,
+        consomme: c.consomme,
+        parJour: Math.round((c.consomme / days) * 100) / 100,
+        couvertureJours: null,
+        absente: true,
+      })
+    })
+
     // Fusion des trois courbes en une seule série continue
     const serie = []
     const f = serieAgg[0] || {}
