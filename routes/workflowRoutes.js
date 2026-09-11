@@ -895,6 +895,11 @@ router.post('/orders/:id/pull-back', authorize('designer', 'chef_production'), a
     order.pipeline.productionDay      = null
     order.pipeline.sentToProductionAt = null
 
+    /* L'insolation repart de zéro : le design va changer, l'écran déjà insolé
+       ne vaut plus rien. Sans cette remise à zéro, la commande renvoyée plus
+       tard arriverait « déjà insolée » et le service sauterait l'étape. */
+    order.pipeline.insolation = { status: 'en_attente', by: '', at: null, note: '' }
+
     pushHistory(order, 'design', req, 'Retirée de la production par le designer')
     await order.save()
     res.json(order)
@@ -1533,6 +1538,28 @@ router.patch('/orders/:id/stage', authorize('superadmin', 'chef_production'), as
     }
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+
+    /* Ramener une commande en arrière doit défaire ce que les étapes
+       suivantes avaient posé. Sinon elle reste marquée « fabriquée » alors
+       qu'on la renvoie en fabrication, et disparaît des listes qui se fondent
+       sur ces dates — un état qu'aucun écran ne sait plus rattraper. */
+    const APRES = ['confirmation', 'design', 'production', 'emballage', 'livraison', 'termine']
+    const cible = APRES.indexOf(stage)
+    const p = order.pipeline
+
+    if (cible > -1 && cible <= APRES.indexOf('livraison')) p.deliveredAt = null
+    if (cible > -1 && cible <= APRES.indexOf('emballage'))  p.packagedAt  = null
+    if (cible > -1 && cible <= APRES.indexOf('production')) p.producedAt  = null
+    if (cible > -1 && cible <= APRES.indexOf('design')) {
+      p.sentToProductionAt = null
+      p.productionDate     = ''
+      p.productionDay      = null
+      p.insolation = { status: 'en_attente', by: '', at: null, note: '' }
+    }
+    if (cible === APRES.indexOf('confirmation')) {
+      p.designValidated   = false
+      p.designValidatedAt = null
+    }
 
     order.pipeline.stage = stage
     pushHistory(order, stage, req, note || 'Étape modifiée par le superadmin')
