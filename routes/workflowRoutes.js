@@ -105,14 +105,26 @@ router.get('/stats', async (req, res) => {
 
 const HOUR = 3600000
 
-/* Écart en heures entre deux étapes ; null si l'une des deux manque,
-   ce qui exclut la commande de la moyenne au lieu de la fausser. */
+/* Écart en heures entre deux étapes ; null si l'une des deux manque, ce qui
+   exclut la commande de la moyenne au lieu de la fausser.
+   Un écart NÉGATIF est également écarté : il signale des horodatages remis
+   dans le désordre — une commande renvoyée en production après avoir déjà
+   été fabriquée, par exemple — et non une durée réelle. */
 const hoursBetween = (from, to) => ({
-  $cond: [
-    { $and: [{ $ne: [`$${from}`, null] }, { $ne: [`$${to}`, null] }] },
-    { $divide: [{ $subtract: [`$${to}`, `$${from}`] }, HOUR] },
-    null,
-  ],
+  $let: {
+    vars: { h: { $divide: [{ $subtract: [`$${to}`, `$${from}`] }, HOUR] } },
+    in: {
+      $cond: [
+        { $and: [
+          { $ne: [`$${from}`, null] },
+          { $ne: [`$${to}`, null] },
+          { $gte: ['$$h', 0] },
+        ] },
+        '$$h',
+        null,
+      ],
+    },
+  },
 })
 
 // GET /api/workflow/dashboard?days=30&tz=+01:00
