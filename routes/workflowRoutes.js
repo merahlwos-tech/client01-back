@@ -944,6 +944,33 @@ router.post('/orders/:id/notes', async (req, res) => {
   }
 })
 
+// PATCH /orders/:id/notes/:noteId — corriger une note (auteur ou superadmin)
+router.patch('/orders/:id/notes/:noteId', async (req, res) => {
+  try {
+    const text = String(req.body.text || '').trim()
+    if (!text) return res.status(400).json({ message: 'Note vide' })
+
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+
+    const note = order.pipeline.notes.id(req.params.noteId)
+    if (!note) return res.status(404).json({ message: 'Note introuvable' })
+
+    const isAuthor = note.by && note.by === req.user?.username
+    if (!isAuthor && !canOverride(req)) {
+      return res.status(403).json({ message: 'Seul l\'auteur peut modifier sa note' })
+    }
+
+    note.text     = text.slice(0, 500)
+    note.editedAt = new Date()
+    await order.save()
+    await order.populate('pipeline.customTags')
+    res.json(order)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
 // DELETE /orders/:id/notes/:noteId — retirer une note (auteur ou superadmin)
 router.delete('/orders/:id/notes/:noteId', async (req, res) => {
   try {

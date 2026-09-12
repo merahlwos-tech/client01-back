@@ -39,6 +39,9 @@ const noteSchema = new mongoose.Schema({
   by:   { type: String, default: '' },
   role: { type: String, default: '' },
   at:   { type: Date,   default: Date.now },
+  // Une note corrigée après coup le dit, pour que personne ne se fie à un
+  // texte qui a changé depuis qu'il l'a lu.
+  editedAt: { type: Date, default: null },
 })
 
 // Matière première consommée par la production pour cette commande
