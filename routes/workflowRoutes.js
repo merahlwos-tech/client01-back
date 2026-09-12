@@ -768,6 +768,14 @@ router.post('/orders/:id/cancel', authorize(
     order.pipeline.cancelledBy  = req.user?.username || ''
     order.pipeline.cancelledRole = req.user?.role || ''
     order.status = 'annulé'
+
+    /* Une annulation est une décision au même titre qu'une confirmation :
+       sans cet horodatage la commande resterait « nouvelle » et n'entrerait
+       dans aucun onglet de la confirmatrice. */
+    if (!order.pipeline.statusSetAt) {
+      order.pipeline.statusSetAt = new Date()
+      order.pipeline.statusSetBy = req.user?.username || ''
+    }
     pushHistory(order, 'annulee', req, req.body.reason || 'Commande annulée')
     await order.save()
     res.json(order)
@@ -1106,6 +1114,16 @@ router.post('/orders/:id/produce', authorize('production'), async (req, res) => 
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
     if (!guardStage(order, 'production', req, res)) return
 
+    /* L'écran doit être insolé avant de fabriquer. Sans ce garde-fou, la
+       production peut terminer d'abord — et la commande quitte alors la liste
+       de l'insolation sans que l'étape ait jamais eu lieu. Le chef garde la
+       main pour les cas où l'atelier a fait autrement. */
+    if (order.pipeline.insolation?.status !== 'confirme' && !canForce(req)) {
+      return res.status(409).json({
+        message: 'L\'insolation n\'a pas encore confirmé cette commande.',
+      })
+    }
+
     order.pipeline.producedAt      = new Date()
     order.pipeline.productionNotes = req.body.notes || ''
     order.pipeline.stage = 'emballage'
@@ -1194,9 +1212,16 @@ const STATUS_TO_STAGE = {
 const VALID_STATUSES = Object.keys(STATUS_TO_STAGE)
 
 /* Une commande quitte la vue de la confirmatrice dès que le DESIGNER a
-   déclaré son travail terminé : le service suivant a pris le relais. Elle
-   reste évidemment consultable dans l'historique. */
-const PAS_ENCORE_CHEZ_LE_DESIGNER = { 'pipeline.designValidated': { $ne: true } }
+   déclaré son travail terminé : le service suivant a pris le relais.
+   EXCEPTION : une annulation lui revient toujours, à quelque étape qu'elle
+   survienne — c'est elle qui rappelle le client, le relais ne s'applique pas
+   à une commande qui sort du circuit. */
+const PAS_ENCORE_CHEZ_LE_DESIGNER = {
+  $or: [
+    { 'pipeline.designValidated': { $ne: true } },
+    { 'pipeline.stage': 'annulee' },
+  ],
+}
 
 // GET /confirmation — liste des commandes gérées par la confirmatrice
 //   ?status=en attente|confirmé|annulé   ?q=recherche   ?limit=
