@@ -97,6 +97,11 @@ async function cleanupOldOrders() {
   return { deleted: total, cancelled: cancelled.deleted, old: old.deleted }
 }
 
+/* Trace du dernier passage, exposée par /health : sans elle, rien ne permet
+   de savoir de l'extérieur si la purge tourne vraiment. */
+let lastRun = null
+const getLastRun = () => lastRun
+
 // Lance la purge au démarrage puis toutes les 6 heures
 function scheduleCleanup() {
   if (!RETENTION_DAYS || RETENTION_DAYS <= 0) {
@@ -106,13 +111,18 @@ function scheduleCleanup() {
   console.log(`🗑️  [PURGE] active — annulées après ${CANCELLED_RETENTION_DAYS} j,`
     + ` les autres après ${RETENTION_DAYS} j`)
 
-  const run = () => cleanupOldOrders().catch(err => console.error('[PURGE] erreur:', err.message))
+  const run = () => cleanupOldOrders()
+    .then(r => { lastRun = { at: new Date().toISOString(), ...r } })
+    .catch(err => {
+      lastRun = { at: new Date().toISOString(), erreur: err.message }
+      console.error('[PURGE] erreur:', err.message)
+    })
 
   setTimeout(run, 60 * 1000)                    // 1 min après le démarrage
   setInterval(run, 6 * 60 * 60 * 1000)          // puis toutes les 6 h
 }
 
 module.exports = {
-  cleanupOldOrders, scheduleCleanup, deleteOrdersByIds,
+  cleanupOldOrders, scheduleCleanup, deleteOrdersByIds, getLastRun,
   RETENTION_DAYS, CANCELLED_RETENTION_DAYS,
 }

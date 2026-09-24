@@ -93,6 +93,11 @@ mongoose.connect(process.env.MONGO_URI, {
    HEALTH CHECK
 ══════════════════════════════════════════════ */
 app.get('/health', (req, res) => {
+  /* Diagnostic de configuration : on n'expose JAMAIS les clés, seulement
+     si elles sont présentes. Sans ça, un token Meta absent ne se voit que
+     dans les logs Render — le tracking échoue alors en silence. */
+  const purge = require('./utils/cleanupOldOrders')
+
   res.json({
     status: 'ok',
     db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
@@ -100,6 +105,20 @@ app.get('/health', (req, res) => {
     // Render expose le commit déployé : permet de savoir avec certitude
     // quelle version du code répond, l'uptime n'étant pas fiable ici.
     commit: (process.env.RENDER_GIT_COMMIT || '').slice(0, 7) || 'inconnu',
+
+    meta: {
+      pixelId:     !!process.env.META_PIXEL_ID,
+      accessToken: !!process.env.META_ACCESS_TOKEN,
+      capiActif:   !!(process.env.META_PIXEL_ID && process.env.META_ACCESS_TOKEN),
+    },
+    retention: {
+      joursCommandes: purge.RETENTION_DAYS,
+      joursAnnulees:  purge.CANCELLED_RETENTION_DAYS,
+      active:         purge.RETENTION_DAYS > 0,
+      dernierPassage: purge.getLastRun(),
+    },
+    ecotrack:   !!process.env.ECOTRACK_API_TOKEN,
+    cloudinary: !!process.env.CLOUDINARY_API_KEY,
   })
 })
 
