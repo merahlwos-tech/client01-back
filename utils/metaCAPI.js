@@ -79,6 +79,12 @@ function buildUserData({ phone, firstName, lastName, wilaya, commune, ip, userAg
   return userData
 }
 
+/* Dernière réponse de Meta, exposée par /health. Un token présent mais
+   expiré ou révoqué ne se voit nulle part ailleurs : Meta refuse, on
+   journalise, et le tracking serveur est mort sans que personne le sache. */
+let dernierEnvoi = null
+const getDernierEnvoi = () => dernierEnvoi
+
 /* ─────────────────────────────────────────────
    Envoi HTTP à l'API Graph de Meta
 ───────────────────────────────────────────────*/
@@ -106,15 +112,27 @@ function postToMeta(payload) {
       let data = ''
       res.on('data', chunk => { data += chunk })
       res.on('end', () => {
+        const eventName = payload.data?.[0]?.event_name
         try {
           const parsed = JSON.parse(data)
           if (parsed.error) {
             console.error('❌ Meta CAPI error:', parsed.error)
+            dernierEnvoi = {
+              at: new Date().toISOString(), evenement: eventName, accepte: false,
+              // Le message de Meta dit pourquoi (token expiré, pixel inconnu…)
+              erreur: parsed.error.message, code: parsed.error.code,
+            }
           } else {
-            console.log(`✅ Meta CAPI [${payload.data?.[0]?.event_name}] envoyé — events_received: ${parsed.events_received}`)
+            console.log(`✅ Meta CAPI [${eventName}] envoyé — events_received: ${parsed.events_received}`)
+            dernierEnvoi = {
+              at: new Date().toISOString(), evenement: eventName, accepte: true,
+              recus: parsed.events_received,
+            }
           }
           resolve(parsed)
         } catch {
+          dernierEnvoi = { at: new Date().toISOString(), evenement: eventName, accepte: false,
+                           erreur: `Réponse illisible (HTTP ${res.statusCode})` }
           resolve(data)
         }
       })
@@ -162,4 +180,4 @@ async function sendMetaEvent(eventName, { eventId, sourceUrl, userData = {}, cus
   return postToMeta(payload)
 }
 
-module.exports = { sendMetaEvent }
+module.exports = { sendMetaEvent, getDernierEnvoi }

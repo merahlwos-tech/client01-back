@@ -110,6 +110,8 @@ app.get('/health', (req, res) => {
       pixelId:     !!process.env.META_PIXEL_ID,
       accessToken: !!process.env.META_ACCESS_TOKEN,
       capiActif:   !!(process.env.META_PIXEL_ID && process.env.META_ACCESS_TOKEN),
+      // La vraie preuve : ce que Meta a répondu au dernier envoi
+      dernierEnvoi: require('./utils/metaCAPI').getDernierEnvoi(),
     },
     retention: {
       joursCommandes: purge.RETENTION_DAYS,
