@@ -73,9 +73,12 @@ async function cleanupOldOrders() {
      Une annulation antérieure à ce champ n'en a pas — on la DATE au lieu de
      la supprimer, sinon une règle nouvelle effacerait rétroactivement tout
      un historique dès sa mise en service. */
+  // Mongoose 9 refuse une mise à jour en pipeline sans cette option : sans
+  // elle la purge entière échouait ici, avant d'avoir supprimé quoi que ce soit.
   await Order.updateMany(
     { 'pipeline.stage': 'annulee', 'pipeline.cancelledAt': null },
     [{ $set: { 'pipeline.cancelledAt': { $ifNull: ['$updatedAt', '$$NOW'] } } }],
+    { updatePipeline: true },
   )
 
   const cancelled = CANCELLED_RETENTION_DAYS > 0
