@@ -7,6 +7,13 @@ const { authenticateAdmin } = require('../middleware/auth')
 const { sendMetaEvent }     = require('../utils/metaCAPI')
 const { sendToEcotrack }    = require('../utils/ecotrack')
 const { unitPriceFor }      = require('../utils/pricing')
+const { applyStatus }       = require('../utils/orderStatus')
+
+// Champs client modifiables depuis la fiche admin
+const CUSTOMER_FIELDS = [
+  'firstName', 'lastName', 'phone', 'extraPhones', 'wilaya', 'wilayaCode',
+  'commune', 'description', 'logoUrls', 'deliveryMethod', 'deliveryFee',
+]
 
 // Plafond des frais de livraison acceptés du client (le plus cher des tarifs
 // Ecotrack reste bien en dessous) : empêche un total gonflé ou négatif.
@@ -156,12 +163,51 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
 
     const wasConfirmed = order.status === 'confirmé'
 
+    /* Le statut passe par la MÊME règle que l'atelier (utils/orderStatus) :
+       étape, compte à rebours, date d'annulation. Avant, seul `status`
+       changeait — une commande confirmée ici restait invisible pour le
+       designer, une annulée restait dans les listes de travail. On n'agit que
+       si le statut change vraiment : la fiche le renvoie à chaque
+       enregistrement, même pour corriger une adresse. */
     if (status !== undefined) {
       if (!validStatuses.includes(status)) return res.status(400).json({ message: 'Statut invalide' })
-      order.status = status
+      if (status !== order.status) {
+        const actor = { username: req.admin?.username || 'admin', role: 'admin' }
+        const stage = applyStatus(order, status, actor)
+        order.pipeline.history.push({
+          stage, by: actor.username, role: 'admin',
+          note: `Statut → ${status} (panneau admin)`, at: new Date(),
+        })
+      }
     }
-    if (items !== undefined)        order.items = items
-    if (customerInfo !== undefined) Object.assign(order.customerInfo, customerInfo)
+
+    /* Articles : la fiche admin ne connaît pas les couleurs sac/impression
+       saisies par la confirmatrice et ne les renvoie pas. Remplacer la liste
+       telle quelle les effaçait : on les reprend de l'article existant. */
+    if (items !== undefined) {
+      order.items = items.map((it, i) => {
+        const prev = (it._id && order.items.id(it._id)) || order.items[i]
+        return {
+          ...it,
+          bagColor:   it.bagColor   !== undefined ? it.bagColor   : (prev?.bagColor   || ''),
+          printColor: it.printColor !== undefined ? it.printColor : (prev?.printColor || ''),
+        }
+      })
+    }
+
+    /* Client : liste blanche de champs. La fiche admin envoie le code de la
+       wilaya sous le nom `wilayaId`, que le schéma ignorait : changer de
+       wilaya gardait l'ancien code, et Ecotrack recevait une commune d'une
+       wilaya avec le code d'une autre. */
+    if (customerInfo !== undefined) {
+      const ci = { ...customerInfo }
+      if (ci.wilayaCode === undefined && ci.wilayaId !== undefined && ci.wilayaId !== '') {
+        ci.wilayaCode = Number(ci.wilayaId) || null
+      }
+      for (const k of CUSTOMER_FIELDS) {
+        if (ci[k] !== undefined) order.customerInfo[k] = ci[k]
+      }
+    }
     if (total !== undefined)        order.total = total
 
     // ── Auto-envoi Ecotrack quand status → confirmé ──────────────────────────

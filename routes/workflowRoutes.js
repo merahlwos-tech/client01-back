@@ -51,11 +51,10 @@ const canView = (role, stage) =>
 
 // Démarre (ou redémarre) le compte à rebours de l'atelier.
 // Appelé quand une commande passe en « confirmé ».
-const startCountdown = (order) => {
-  const now = new Date()
-  order.pipeline.confirmedAt = now
-  order.pipeline.deadlineAt  = new Date(now.getTime() + Order.DEADLINE_DAYS * 24 * 60 * 60 * 1000)
-}
+// Règles de statut partagées avec le panneau /admin (voir utils/orderStatus)
+const {
+  STATUS_TO_STAGE, VALID_STATUSES, startCountdown, resetAfterStage, applyStatus,
+} = require('../utils/orderStatus')
 
 // Ajoute une entrée d'historique
 const pushHistory = (order, stage, req, note = '') => {
@@ -1231,12 +1230,6 @@ router.post('/orders/:id/deliver', authorize('chef_production'), async (req, res
 const Product = require('../models/Product')
 
 // Statut public ⇄ étape du pipeline
-const STATUS_TO_STAGE = {
-  'en attente': 'confirmation',
-  'confirmé':   'design',      // confirmé → part chez le designer
-  'annulé':     'annulee',
-}
-const VALID_STATUSES = Object.keys(STATUS_TO_STAGE)
 
 /* Une commande quitte la vue de la confirmatrice dès que le DESIGNER a
    déclaré son travail terminé : le service suivant a pris le relais.
@@ -1353,34 +1346,8 @@ router.patch('/orders/:id/status', authorize('confirmatrice'), async (req, res) 
       })
     }
 
-    const wasConfirmed = order.status === 'confirmé'
-
-    order.status = status
-    order.pipeline.stage = nextStage
-
-    // La commande est traitée : elle quitte l'onglet « Commandes »
-    order.pipeline.statusSetAt = new Date()
-    order.pipeline.statusSetBy = req.user?.username || ''
-
-    // Passage en « confirmé » → démarre le compte à rebours de 6 jours
-    if (status === 'confirmé') {
-      order.pipeline.confirmedBy = req.user?.username || ''
-      if (!wasConfirmed) startCountdown(order)
-    }
-
-    /* L'annulation lance le compte à rebours de purge (30 jours). Un
-       retour en arrière l'efface : la commande n'est plus condamnée. */
-    if (status === 'annulé') {
-      if (!order.pipeline.cancelledAt) {
-        order.pipeline.cancelledAt   = new Date()
-        order.pipeline.cancelledBy   = req.user?.username || ''
-        order.pipeline.cancelledRole = req.user?.role || ''
-      }
-    } else {
-      order.pipeline.cancelledAt   = null
-      order.pipeline.cancelledBy   = ''
-      order.pipeline.cancelledRole = ''
-    }
+    // Même règle que le panneau /admin (utils/orderStatus)
+    applyStatus(order, status, { username: req.user?.username, role: req.user?.role })
 
     pushHistory(order, nextStage, req, `Statut → ${status}`)
     await order.save()
@@ -1591,27 +1558,8 @@ router.patch('/orders/:id/stage', authorize('superadmin', 'chef_production'), as
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
-    /* Ramener une commande en arrière doit défaire ce que les étapes
-       suivantes avaient posé. Sinon elle reste marquée « fabriquée » alors
-       qu'on la renvoie en fabrication, et disparaît des listes qui se fondent
-       sur ces dates — un état qu'aucun écran ne sait plus rattraper. */
-    const APRES = ['confirmation', 'design', 'production', 'emballage', 'livraison', 'termine']
-    const cible = APRES.indexOf(stage)
-    const p = order.pipeline
-
-    if (cible > -1 && cible <= APRES.indexOf('livraison')) p.deliveredAt = null
-    if (cible > -1 && cible <= APRES.indexOf('emballage'))  p.packagedAt  = null
-    if (cible > -1 && cible <= APRES.indexOf('production')) p.producedAt  = null
-    if (cible > -1 && cible <= APRES.indexOf('design')) {
-      p.sentToProductionAt = null
-      p.productionDate     = ''
-      p.productionDay      = null
-      p.insolation = { status: 'en_attente', by: '', at: null, note: '' }
-    }
-    if (cible === APRES.indexOf('confirmation')) {
-      p.designValidated   = false
-      p.designValidatedAt = null
-    }
+    // Défait ce que les étapes suivantes avaient posé (utils/orderStatus)
+    resetAfterStage(order, stage)
 
     order.pipeline.stage = stage
     pushHistory(order, stage, req, note || 'Étape modifiée par le superadmin')
