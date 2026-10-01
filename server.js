@@ -59,7 +59,11 @@ const orderLimit = rateLimit({
 app.use('/api/settings', generalLimit, require('./routes/settingsRoutes'))
 app.use('/api/reviews',  generalLimit, require('./routes/reviewRoutes'))
 app.use('/api/products', generalLimit, require('./routes/productRoutes'))
-app.use('/api/orders',   orderLimit,   require('./routes/orderRoutes'))
+// La limite stricte ne vise QUE la création d'une commande par un visiteur.
+// Montée sur tout /api/orders, elle bloquait aussi le panneau admin (liste,
+// fiche, suppressions groupées) après 10 requêtes en 15 minutes.
+app.post('/api/orders',  orderLimit)
+app.use('/api/orders',   generalLimit, require('./routes/orderRoutes'))
 app.use('/api/auth',     generalLimit, require('./routes/authRoutes'))
 app.use('/api/upload',   generalLimit, require('./routes/uploadRoutes'))
 app.use('/api/admin',    generalLimit, require('./routes/adminRoutes'))

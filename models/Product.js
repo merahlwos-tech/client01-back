@@ -1,8 +1,18 @@
 const mongoose = require('mongoose')
 
+// Palier de prix dégressif : à partir de `qty` unités, l'unité coûte `price`
+const priceTierSchema = new mongoose.Schema({
+  qty:   { type: Number, required: true, min: 1 },
+  price: { type: Number, required: true, min: 0 },
+}, { _id: false })
+
 const sizeSchema = new mongoose.Schema({
   size:  { type: String, required: true },
   price: { type: Number, required: true, min: 0 },
+  /* Les paliers existaient en base mais pas dans le schéma : Mongoose les
+     supprimait à chaque enregistrement d'un produit depuis /admin, et les
+     prix dégressifs disparaissaient sans prévenir. */
+  priceTiers: { type: [priceTierSchema], default: [] },
 })
 
 const productSchema = new mongoose.Schema(

@@ -6,9 +6,21 @@ const Settings = require('../models/Settings')
 const { authenticateAdmin } = require('../middleware/auth')
 
 /* ─────────────────────────────────────────────────────────────
-   TELEGRAM CONFIG (tout en dur, pas de .env)
+   TELEGRAM CONFIG
+   Le jeton vient de l'environnement (variable TELEGRAM_TOKEN sur Render).
+   Il était écrit en dur ici, dans un dépôt GitHub PUBLIC : quiconque le lit
+   peut piloter le bot. L'ancien jeton doit être révoqué via @BotFather.
    ─────────────────────────────────────────────────────────── */
-const TELEGRAM_TOKEN = '8137759752:AAFf-16JebT60HNKrIBi_iZbC0dALGSYoTc'
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || ''
+if (!TELEGRAM_TOKEN) {
+  console.warn('⚠️  TELEGRAM_TOKEN absent — notifications Telegram désactivées')
+}
+
+/* Sans jeton, on le dit clairement plutôt que de laisser Telegram répondre
+   un 404 obscur relayé en « Erreur Telegram ». */
+const TELEGRAM_ABSENT = {
+  message: 'Bot Telegram non configuré : définissez la variable TELEGRAM_TOKEN sur Render.',
+}
 
 /* Utilitaire : appel HTTPS simple vers l'API Telegram */
 function telegramRequest(method, payload) {
@@ -104,9 +116,11 @@ router.get('/stats', authenticateAdmin, async (req, res) => {
     const byStatus = {}
     agg.forEach(row => { byStatus[row._id] = row })
 
-    const confirmed = byStatus['confirme']   || { count: 0, revenue: 0 }
+    // Clés AVEC accents, comme l'enum du modèle Order ('confirmé', 'annulé').
+    // Sans accent, aucune commande ne correspondait : CA et compteurs à 0.
+    const confirmed = byStatus['confirmé']   || { count: 0, revenue: 0 }
     const pending   = byStatus['en attente'] || { count: 0 }
-    const cancelled = byStatus['annule']     || { count: 0 }
+    const cancelled = byStatus['annulé']     || { count: 0 }
 
     res.json({
       totalOrders,
@@ -173,6 +187,7 @@ router.post('/hidden-categories', authenticateAdmin, async (req, res) => {
    Appeler UNE FOIS après avoir envoyé un message au bot.
    ─────────────────────────────────────────────────────────── */
 router.get('/telegram/discover', authenticateAdmin, async (req, res) => {
+  if (!TELEGRAM_TOKEN) return res.status(503).json(TELEGRAM_ABSENT)
   try {
     const chatId = await resolveChatId()
     if (!chatId) {
@@ -192,6 +207,7 @@ router.get('/telegram/discover', authenticateAdmin, async (req, res) => {
    body: { phone: '0xxxxxxxxx' }
    ─────────────────────────────────────────────────────────── */
 router.post('/signaler', authenticateAdmin, async (req, res) => {
+  if (!TELEGRAM_TOKEN) return res.status(503).json(TELEGRAM_ABSENT)
   try {
     const { phone } = req.body
     if (!phone) return res.status(400).json({ message: 'Numéro requis' })

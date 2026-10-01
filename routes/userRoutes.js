@@ -3,10 +3,12 @@ const express = require('express')
 const router  = express.Router()
 const User    = require('../models/User')
 const { ROLES } = require('../models/User')
-const { authenticateUser, authorize } = require('../middleware/auth')
+const { requireRealSuperadmin } = require('../middleware/auth')
 
-// Toutes les routes de ce fichier exigent un superadmin (ou le compte .env legacy).
-router.use(authenticateUser, authorize('superadmin'))
+// Toutes les routes de ce fichier exigent un VRAI superadmin (ou le compte
+// .env), connecté avec un jeton — l'accès libre de l'atelier ne s'applique
+// pas ici. Voir requireRealSuperadmin dans middleware/auth.js.
+router.use(requireRealSuperadmin)
 
 // GET /api/users — liste des comptes
 router.get('/', async (req, res) => {
