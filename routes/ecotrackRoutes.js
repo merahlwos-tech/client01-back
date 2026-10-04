@@ -83,11 +83,6 @@ router.post('/send-order/:id', authenticateAdmin, async (req, res) => {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
-    // Un colis pour une commande annulée serait facturé et retourné à vide
-    if (order.status === 'annulé' || order.pipeline?.stage === 'annulee') {
-      return res.status(409).json({ message: 'Commande annulée : envoi Ecotrack refusé.' })
-    }
-
     // Déjà envoyée ?
     if (order.ecotrackTracking) {
       return res.json({
