@@ -22,7 +22,7 @@ const OPEN_ACCESS = process.env.STAFF_OPEN_ACCESS !== 'false';
 const GUEST_USER = { username: 'acces-libre', role: 'superadmin', openAccess: true };
 
 if (OPEN_ACCESS) {
-  console.warn('⚠️  ATELIER EN ACCÈS LIBRE — aucune authentification requise sur /api/workflow et /api/stock (la gestion des comptes reste protégée)');
+  console.warn('⚠️  ATELIER EN ACCÈS LIBRE — aucune authentification requise sur /api/workflow, /api/stock, /api/users');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,34 +91,4 @@ const authorize = (...allowedRoles) => (req, res, next) => {
   return res.status(403).json({ message: 'Accès refusé pour votre rôle.' });
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GESTION DES COMPTES — exige un VRAI jeton superadmin, même en accès libre.
-//
-// L'accès libre ouvre l'atelier, pas les clés du site : sans ce contrôle, un
-// inconnu pouvait créer un compte superadmin, se connecter avec, et obtenir
-// un jeton accepté par tout le panneau /admin e-commerce (commandes, données
-// clients, suppressions). Créer ou modifier un compte n'a jamais besoin
-// d'être anonyme.
-// ─────────────────────────────────────────────────────────────────────────────
-const requireRealSuperadmin = (req, res, next) => {
-  try {
-    const token = req.header('Authorization')?.replace('Bearer ', '');
-    if (!token) {
-      return res.status(401).json({
-        message: 'Connectez-vous avec le compte propriétaire pour gérer les comptes.',
-      });
-    }
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!isSuperadmin(decoded.role)) {
-      return res.status(403).json({ message: 'Réservé au superadmin.' });
-    }
-    req.user = decoded;
-    next();
-  } catch (error) {
-    res.status(401).json({ message: 'Token invalide' });
-  }
-};
-
-module.exports = {
-  authenticateAdmin, authenticateUser, authorize, requireRealSuperadmin, isSuperadmin, OPEN_ACCESS,
-};
+module.exports = { authenticateAdmin, authenticateUser, authorize, isSuperadmin, OPEN_ACCESS };

@@ -19,24 +19,6 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Identifiants requis' });
     }
 
-    /* 0) Compte propriétaire (.env) EN PREMIER. Chercher d'abord en base
-          laissait un compte homonyme intercepter la connexion : le vrai mot
-          de passe échouait (401) et le propriétaire était exclu de son propre
-          panneau. */
-    if (
-      process.env.ADMIN_USERNAME &&
-      username === process.env.ADMIN_USERNAME &&
-      password === process.env.ADMIN_PASSWORD
-    ) {
-      const token = signToken({ username, role: 'admin' });
-      return res.json({
-        token,
-        message: 'Connexion réussie',
-        user: { username, role: 'admin' },
-        admin: { username },   // compat rétro avec l'ancien front
-      });
-    }
-
     // 1) Compte staff en base ------------------------------------------------
     const user = await User.findOne({ username: String(username).toLowerCase().trim() });
     if (user) {
@@ -49,6 +31,21 @@ router.post('/login', async (req, res) => {
         token,
         message: 'Connexion réussie',
         user: { username: user.username, role: user.role, fullName: user.fullName },
+      });
+    }
+
+    // 2) Compte .env legacy (propriétaire) -----------------------------------
+    if (
+      username === process.env.ADMIN_USERNAME &&
+      password === process.env.ADMIN_PASSWORD
+    ) {
+      const token = signToken({ username, role: 'admin' });
+      return res.json({
+        token,
+        message: 'Connexion réussie',
+        // 'admin' est traité comme superadmin côté plateforme interne
+        user: { username, role: 'admin' },
+        admin: { username },   // compat rétro avec l'ancien front
       });
     }
 

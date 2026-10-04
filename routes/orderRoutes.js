@@ -6,11 +6,6 @@ const cloudinary = require('../config/cloudinary')
 const { authenticateAdmin } = require('../middleware/auth')
 const { sendMetaEvent }     = require('../utils/metaCAPI')
 const { sendToEcotrack }    = require('../utils/ecotrack')
-const { unitPriceFor }      = require('../utils/pricing')
-
-// Plafond des frais de livraison acceptés du client (le plus cher des tarifs
-// Ecotrack reste bien en dessous) : empêche un total gonflé ou négatif.
-const MAX_DELIVERY_FEE = 3000
 
 function extractCloudinaryPublicId(url) {
   try {
@@ -22,66 +17,19 @@ function extractCloudinaryPublicId(url) {
 // ─── POST /api/orders ────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { customerInfo, items, metaEventId, metaFbp, metaFbc } = req.body
-    if (!customerInfo || !Array.isArray(items) || items.length === 0) {
+    const { customerInfo, items, total, metaEventId, metaFbp, metaFbc } = req.body
+    if (!customerInfo || !items || !total) {
       return res.status(400).json({ message: 'Données incomplètes' })
     }
 
-    /* Le prix vient du CATALOGUE, jamais du navigateur. Le panier envoyait
-       le prix de base de la taille en ignorant les paliers de quantité et le
-       supplément couleurs : des commandes étaient enregistrées — et
-       encaissées par Ecotrack — jusqu'à 58 % trop cher ou à moitié prix. */
-    const cleanItems = []
     for (const item of items) {
-      const quantity = Number(item.quantity)
-      if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 1000000) {
-        return res.status(400).json({ message: `Quantité invalide pour ${item.name || 'un article'}` })
-      }
-      const product = await Product.findById(item.product).lean()
+      const product = await Product.findById(item.product)
       if (!product) return res.status(404).json({ message: `Produit introuvable : ${item.name}` })
-
-      const maxColors = Number(product.colorDesignMaxColors) || null
-      let numberOfColors = item.numberOfColors != null ? Number(item.numberOfColors) : null
-      if (numberOfColors != null) {
-        numberOfColors = Math.max(1, Math.floor(numberOfColors) || 1)
-        if (maxColors) numberOfColors = Math.min(numberOfColors, maxColors)
-      }
-
-      const price = unitPriceFor(product, item.size, quantity, !!item.doubleSided, numberOfColors)
-      if (price == null) {
-        return res.status(400).json({ message: `Taille ${item.size} introuvable pour ${product.name}` })
-      }
-
-      cleanItems.push({
-        product:        product._id,
-        name:           product.name,
-        size:           item.size,
-        doubleSided:    !!item.doubleSided,
-        selectedColors: Array.isArray(item.selectedColors)
-          ? item.selectedColors.map(String).slice(0, 10) : [],
-        numberOfColors,
-        quantity,
-        price,
-      })
+      const sizeData = product.sizes.find((s) => s.size == item.size)
+      if (!sizeData) return res.status(400).json({ message: `Taille ${item.size} introuvable pour ${item.name}` })
     }
 
-    /* Frais de livraison : le tarif Ecotrack est choisi côté client, mais on
-       en borne la valeur et on applique ici la règle de gratuité (500 unités
-       et plus en Stop Desk) — le client ne peut plus se l'attribuer. */
-    const units = cleanItems.reduce((s, i) => s + i.quantity, 0)
-    let deliveryFee = Number(customerInfo.deliveryFee)
-    if (!Number.isFinite(deliveryFee) || deliveryFee < 0) deliveryFee = 0
-    deliveryFee = Math.min(deliveryFee, MAX_DELIVERY_FEE)
-    if (units >= 500 && customerInfo.deliveryMethod === 'Stop Desk') deliveryFee = 0
-
-    const total = cleanItems.reduce((s, i) => s + i.price * i.quantity, 0) + deliveryFee
-
-    const order = new Order({
-      customerInfo: { ...customerInfo, deliveryFee },
-      items: cleanItems,
-      total,
-      status: 'en attente',
-    })
+    const order = new Order({ customerInfo, items, total, status: 'en attente' })
     await order.save()
 
     // Meta CAPI Purchase (fire-and-forget)
@@ -105,10 +53,9 @@ router.post('/', async (req, res) => {
           },
           customData: {
             order_id: order._id.toString(),
-            // Les articles vérifiés, et le total recalculé par le serveur
-            content_ids: cleanItems.map(i => String(i.product)),
+            content_ids: items.map(i => String(i.product)),
             content_type: 'product',
-            num_items: units,
+            num_items: items.reduce((s, i) => s + i.quantity, 0),
             value: total, currency: 'DZD',
           },
         })
