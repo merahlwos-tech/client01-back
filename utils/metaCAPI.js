@@ -40,12 +40,33 @@ function sha256(value) {
 ───────────────────────────────────────────────*/
 function normalizePhone(phone) {
   if (!phone) return null
-  const digits = String(phone).replace(/\D/g, '')
-  // 0551234567 → 213551234567
-  if (digits.startsWith('0')) return '213' + digits.slice(1)
+  let digits = String(phone).replace(/\D/g, '')
+  // 00213551234567 → 213551234567 (préfixe international écrit « 00 »)
+  if (digits.startsWith('00')) digits = digits.slice(2)
   // Déjà préfixé 213
   if (digits.startsWith('213')) return digits
+  // 0551234567 → 213551234567
+  if (digits.startsWith('0')) return '213' + digits.slice(1)
+  // 551234567 (9 chiffres, sans le 0) → 213551234567
+  if (digits.length === 9 && /^[567]/.test(digits)) return '213' + digits
   return digits
+}
+
+/* ─────────────────────────────────────────────
+   Normalisations exigées par Meta AVANT hachage.
+   Un haché ne correspond que si la valeur est écrite exactement comme Meta
+   l'attend : « Sidi Bel Abbès » ou « M'Sila » hachés tels quels ne sont
+   jamais reconnus.
+   - ville / région : minuscules, sans espace ni ponctuation
+   - nom / prénom   : minuscules, sans ponctuation
+   Les lettres de tous les alphabets (accents, arabe) sont conservées.
+───────────────────────────────────────────────*/
+function normalizeGeo(value) {
+  return String(value).normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+}
+function normalizeName(value) {
+  return String(value).normalize('NFC').toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim()
 }
 
 /* ─────────────────────────────────────────────
@@ -62,10 +83,10 @@ function buildUserData({ phone, firstName, lastName, wilaya, commune, ip, userAg
   const userData = {}
 
   if (phone)      userData.ph  = sha256(normalizePhone(phone))
-  if (firstName)  userData.fn  = sha256(firstName)
-  if (lastName)   userData.ln  = sha256(lastName)
-  if (wilaya)     userData.st  = sha256(wilaya)   // st = state/province → wilaya ✓
-  if (commune)    userData.ct  = sha256(commune)  // ct = city → commune ✓
+  if (firstName)  userData.fn  = sha256(normalizeName(firstName))
+  if (lastName)   userData.ln  = sha256(normalizeName(lastName))
+  if (wilaya)     userData.st  = sha256(normalizeGeo(wilaya))   // st = state/province → wilaya ✓
+  if (commune)    userData.ct  = sha256(normalizeGeo(commune))  // ct = city → commune ✓
   userData.country             = sha256('dz')     // Algérie toujours
 
   // Non hashés (Meta les accepte en clair pour ces champs)
@@ -180,4 +201,8 @@ async function sendMetaEvent(eventName, { eventId, sourceUrl, userData = {}, cus
   return postToMeta(payload)
 }
 
-module.exports = { sendMetaEvent, getDernierEnvoi }
+module.exports = {
+  sendMetaEvent, getDernierEnvoi,
+  // Exposées pour pouvoir les vérifier sans rien envoyer à Meta
+  normalizePhone, normalizeGeo, normalizeName,
+}

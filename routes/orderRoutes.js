@@ -17,7 +17,7 @@ function extractCloudinaryPublicId(url) {
 // ─── POST /api/orders ────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { customerInfo, items, total, metaEventId, metaFbp, metaFbc } = req.body
+    const { customerInfo, items, total, metaEventId, metaFbp, metaFbc, metaSourceUrl } = req.body
     if (!customerInfo || !items || !total) {
       return res.status(400).json({ message: 'Données incomplètes' })
     }
@@ -41,9 +41,20 @@ router.post('/', async (req, res) => {
           req.socket?.remoteAddress || ''
         ).replace('::ffff:', '')
 
+        /* Adresse de l'achat déclarée à Meta. Le Referer ne contient que le
+           domaine (requête entre deux domaines) : tous les achats semblaient
+           venir de la page d'accueil. Le site envoie donc l'adresse de la
+           page de confirmation ; on ne l'accepte que si elle appartient bien
+           au site qui appelle. */
+        const origin = req.headers.origin || ''
+        const sourceUrl = (
+          typeof metaSourceUrl === 'string' && metaSourceUrl.length <= 300 &&
+          origin && metaSourceUrl.startsWith(`${origin}/`)
+        ) ? metaSourceUrl : (req.headers['referer'] || '')
+
         await sendMetaEvent('Purchase', {
           eventId:   metaEventId || undefined,
-          sourceUrl: req.headers['referer'] || '',
+          sourceUrl,
           userData: {
             phone: customerInfo.phone, firstName: customerInfo.firstName,
             lastName: customerInfo.lastName, wilaya: customerInfo.wilaya,
@@ -55,6 +66,10 @@ router.post('/', async (req, res) => {
             order_id: order._id.toString(),
             content_ids: items.map(i => String(i.product)),
             content_type: 'product',
+            // Même détail que le pixel, pour que les deux envois se recoupent
+            contents: items.map(i => ({
+              id: String(i.product), quantity: i.quantity, item_price: i.price,
+            })),
             num_items: items.reduce((s, i) => s + i.quantity, 0),
             value: total, currency: 'DZD',
           },
