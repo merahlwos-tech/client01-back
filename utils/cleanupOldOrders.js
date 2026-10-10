@@ -35,6 +35,27 @@ function extractCloudinaryPublicId(url) {
   } catch { return null }
 }
 
+/* Une commande reprise d'une ancienne (client qui recommande) réutilise ses
+   logos : les deux pointent vers le MÊME fichier. Effacer les fichiers de
+   l'ancienne casserait donc le logo de la nouvelle. On ne garde, parmi `urls`,
+   que les fichiers qu'aucune AUTRE commande n'utilise encore. */
+async function keepSharedFiles(urls, excludeIds = []) {
+  if (!urls.length) return urls
+  const others = await Order.find({
+    _id: { $nin: excludeIds },
+    $or: [
+      { 'customerInfo.logoUrls': { $in: urls } },
+      { 'pipeline.design.files': { $in: urls } },
+    ],
+  }).select('customerInfo.logoUrls pipeline.design.files').lean()
+  if (!others.length) return urls
+  const used = new Set(others.flatMap(o => [
+    ...(o.customerInfo?.logoUrls || []),
+    ...(o.pipeline?.design?.files || []),
+  ]))
+  return urls.filter(u => !used.has(u))
+}
+
 /* Supprime les commandes correspondant au filtre, et avec elles les fichiers
    Cloudinary qu'elles référencent. Le nettoyage des fichiers est « best
    effort » : un échec Cloudinary ne doit pas empêcher la suppression. */
@@ -44,10 +65,10 @@ async function deleteOrdersWhere(filter) {
     .lean()
   if (doomed.length === 0) return { deleted: 0, files: 0 }
 
-  const urls = doomed.flatMap(o => [
+  const urls = await keepSharedFiles(doomed.flatMap(o => [
     ...(o.customerInfo?.logoUrls || []),
     ...(o.pipeline?.design?.files || []),
-  ])
+  ]), doomed.map(o => o._id))
   await Promise.all(urls.map(url => {
     const publicId = extractCloudinaryPublicId(url)
     if (!publicId) return Promise.resolve()
@@ -126,6 +147,6 @@ function scheduleCleanup() {
 }
 
 module.exports = {
-  cleanupOldOrders, scheduleCleanup, deleteOrdersByIds, getLastRun,
+  cleanupOldOrders, scheduleCleanup, deleteOrdersByIds, getLastRun, keepSharedFiles,
   RETENTION_DAYS, CANCELLED_RETENTION_DAYS,
 }

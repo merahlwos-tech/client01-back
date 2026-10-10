@@ -6,6 +6,7 @@ const cloudinary = require('../config/cloudinary')
 const { authenticateAdmin } = require('../middleware/auth')
 const { sendMetaEvent }     = require('../utils/metaCAPI')
 const { sendToEcotrack }    = require('../utils/ecotrack')
+const { keepSharedFiles }   = require('../utils/cleanupOldOrders')
 
 function extractCloudinaryPublicId(url) {
   try {
@@ -156,7 +157,9 @@ router.delete('/:id', authenticateAdmin, async (req, res) => {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
-    const logoUrls = order.customerInfo?.logoUrls || []
+    // Un logo encore utilisé par une autre commande (client qui a recommandé)
+    // n'est pas effacé : il disparaîtrait de cette autre commande.
+    const logoUrls = await keepSharedFiles(order.customerInfo?.logoUrls || [], [order._id])
     if (logoUrls.length > 0) {
       await Promise.all(logoUrls.map(url => {
         const publicId = extractCloudinaryPublicId(url)

@@ -3,6 +3,8 @@
 const express       = require('express')
 const router        = express.Router()
 const Order         = require('../models/Order')
+const RawMaterial   = require('../models/RawMaterial')
+const StockMovement = require('../models/StockMovement')
 const { sendToEcotrack } = require('../utils/ecotrack')
 const { CANCELLED_RETENTION_DAYS } = require('../utils/cleanupOldOrders')
 const { authenticateUser, authorize, isSuperadmin } = require('../middleware/auth')
@@ -995,6 +997,102 @@ router.delete('/orders/:id/notes/:noteId', async (req, res) => {
 })
 
 /* ══════════════════════════════════════════════════════════════
+   MATIÈRES PRÉVUES POUR UNE COMMANDE
+   Dès qu'une commande arrive, la confirmatrice indique ce qu'elle va
+   consommer : le stock diminue aussitôt, sans attendre la fabrication.
+   Une nouvelle saisie REMPLACE la précédente — seul l'écart est appliqué
+   au stock. Corriger une erreur, ou tout remettre à zéro, ne compte donc
+   jamais deux fois.
+══════════════════════════════════════════════════════════════ */
+
+// PUT /orders/:id/materials  { materials: [{ material, quantity }] }
+router.put('/orders/:id/materials', authorize('confirmatrice', 'chef_production'), async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Commande introuvable' })
+
+    // Saisie nettoyée, regroupée par matière
+    const wanted = new Map()
+    for (const m of (Array.isArray(req.body?.materials) ? req.body.materials : [])) {
+      const id = String(m?.material || '')
+      const q  = Number(m?.quantity)
+      if (!/^[0-9a-fA-F]{24}$/.test(id) || !Number.isFinite(q) || q <= 0) continue
+      wanted.set(id, (wanted.get(id) || 0) + q)
+    }
+    if (wanted.size > 30) return res.status(400).json({ message: '30 matières au maximum par commande' })
+
+    // Ce qui avait déjà été déduit pour cette commande
+    const previous = new Map()
+    for (const m of (order.pipeline.materialsUsed || [])) {
+      if (!m.material) continue
+      const id = String(m.material)
+      previous.set(id, (previous.get(id) || 0) + (Number(m.quantity) || 0))
+    }
+
+    const ids  = [...new Set([...wanted.keys(), ...previous.keys()])]
+    const docs = await RawMaterial.find({ _id: { $in: ids } })
+    const byId = new Map(docs.map(d => [String(d._id), d]))
+
+    // On vérifie TOUT avant de toucher au stock
+    for (const [id, q] of wanted) {
+      const mat = byId.get(id)
+      if (!mat) return res.status(404).json({ message: 'Matière introuvable dans le stock' })
+      const delta = q - (previous.get(id) || 0)
+      if (delta > mat.quantity) {
+        return res.status(409).json({
+          message: `Stock insuffisant pour « ${mat.name} » : il reste ${mat.quantity} ${mat.unit}.`,
+        })
+      }
+    }
+
+    const by = req.user?.username || ''
+    const done = []          // écarts déjà appliqués, pour pouvoir revenir en arrière
+    const undo = async () => {
+      for (const d of done) await RawMaterial.updateOne({ _id: d.id }, { $inc: { quantity: d.delta } })
+    }
+
+    for (const id of ids) {
+      const mat = byId.get(id)
+      if (!mat) continue      // matière supprimée du stock depuis : rien à rendre
+      const delta = (wanted.get(id) || 0) - (previous.get(id) || 0)   // > 0 : sort du stock
+      if (delta === 0) continue
+
+      /* La condition sur la quantité protège d'une double saisie simultanée :
+         le stock ne peut pas passer sous zéro. */
+      const r = await RawMaterial.updateOne(
+        delta > 0 ? { _id: mat._id, quantity: { $gte: delta } } : { _id: mat._id },
+        { $inc: { quantity: -delta } },
+      )
+      if (r.modifiedCount === 0) {
+        await undo()
+        return res.status(409).json({ message: `Le stock de « ${mat.name} » vient de changer. Réessayez.` })
+      }
+      done.push({ id: mat._id, delta })
+
+      await StockMovement.create({
+        material: mat._id, materialName: mat.name,
+        type: delta > 0 ? 'out' : 'in', quantity: Math.abs(delta),
+        order: order._id, by,
+        note: delta > 0 ? 'Prévu pour une commande' : 'Correction de la prévision',
+      })
+    }
+
+    const applied = [...wanted].map(([id, quantity]) => ({
+      material: byId.get(id)._id, name: byId.get(id).name, quantity,
+    }))
+    order.pipeline.materialsUsed = applied
+    pushHistory(order, order.pipeline.stage, req, applied.length
+      ? `Matières prévues : ${applied.map(a => `${a.name} ×${a.quantity}`).join(', ')}`
+      : 'Matières prévues remises à zéro')
+    await order.save()
+    await order.populate([{ path: 'items.product', select: 'name images' }, { path: 'pipeline.customTags' }])
+    res.json(order)
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
+/* ══════════════════════════════════════════════════════════════
    SERVICE INSOLATION
    Voit les commandes validées par le designer et les marque
    « confirmé » une fois l'insolation faite.
@@ -1414,7 +1512,8 @@ const computeTotal = (items, deliveryFee = 0) =>
   + (Number(deliveryFee) || 0)
 
 // Nettoie une couleur saisie librement (sac, impression)
-const cleanColor = (v) => String(v || '').trim().slice(0, 40)
+// Plusieurs couleurs possibles, séparées par des virgules (« noir, or, blanc »)
+const cleanColor = (v) => String(v || '').trim().slice(0, 120)
 
 // Numéros de téléphone supplémentaires : on retire les vides et les doublons
 const MAX_EXTRA_PHONES = 5
