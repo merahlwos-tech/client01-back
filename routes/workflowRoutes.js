@@ -1005,6 +1005,9 @@ router.delete('/orders/:id/notes/:noteId', async (req, res) => {
    jamais deux fois.
 ══════════════════════════════════════════════════════════════ */
 
+// Deux matières peuvent porter le même nom : la variante les distingue
+const matLabel = (m) => (m.variant ? `${m.name} — ${m.variant}` : m.name)
+
 // PUT /orders/:id/materials  { materials: [{ material, quantity }] }
 router.put('/orders/:id/materials', authorize('confirmatrice', 'chef_production'), async (req, res) => {
   try {
@@ -1040,7 +1043,7 @@ router.put('/orders/:id/materials', authorize('confirmatrice', 'chef_production'
       const delta = q - (previous.get(id) || 0)
       if (delta > mat.quantity) {
         return res.status(409).json({
-          message: `Stock insuffisant pour « ${mat.name} » : il reste ${mat.quantity} ${mat.unit}.`,
+          message: `Stock insuffisant pour « ${matLabel(mat)} » : il reste ${mat.quantity} ${mat.unit}.`,
         })
       }
     }
@@ -1065,20 +1068,20 @@ router.put('/orders/:id/materials', authorize('confirmatrice', 'chef_production'
       )
       if (r.modifiedCount === 0) {
         await undo()
-        return res.status(409).json({ message: `Le stock de « ${mat.name} » vient de changer. Réessayez.` })
+        return res.status(409).json({ message: `Le stock de « ${matLabel(mat)} » vient de changer. Réessayez.` })
       }
       done.push({ id: mat._id, delta })
 
       await StockMovement.create({
-        material: mat._id, materialName: mat.name,
-        type: delta > 0 ? 'out' : 'in', quantity: Math.abs(delta),
+        material: mat._id, materialName: matLabel(mat),
+        type: delta > 0 ? 'out' : 'in', quantity: Math.abs(delta), delta: -delta,
         order: order._id, by,
         note: delta > 0 ? 'Prévu pour une commande' : 'Correction de la prévision',
       })
     }
 
     const applied = [...wanted].map(([id, quantity]) => ({
-      material: byId.get(id)._id, name: byId.get(id).name, quantity,
+      material: byId.get(id)._id, name: matLabel(byId.get(id)), quantity,
     }))
     order.pipeline.materialsUsed = applied
     pushHistory(order, order.pipeline.stage, req, applied.length

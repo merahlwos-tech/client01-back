@@ -11,6 +11,9 @@ router.use(authenticateUser)
 // Écriture du stock réservée au chef de production (+ superadmin via authorize)
 const canWriteStock = authorize('chef_production')
 
+// Nom affiché dans le journal : la variante distingue deux matières homonymes
+const labelOf = (m) => (m.variant ? `${m.name} — ${m.variant}` : m.name)
+
 /* ══════════════════════════════════════════════════════════════
    LECTURE — accessible à tout le staff authentifié
    (la production a besoin de voir les matières, le chef aussi)
@@ -19,7 +22,7 @@ const canWriteStock = authorize('chef_production')
 // GET /api/stock — liste des matières premières
 router.get('/', async (req, res) => {
   try {
-    const materials = await RawMaterial.find().sort({ name: 1 })
+    const materials = await RawMaterial.find().sort({ name: 1, variant: 1, createdAt: 1 })
     res.json(materials)
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur', error: err.message })
@@ -86,7 +89,10 @@ router.get('/stats', async (req, res) => {
 router.get('/movements', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 50, 200)
-    const movements = await StockMovement.find()
+    // ?material=<id> : l'historique d'une seule matière
+    const filter = /^[0-9a-fA-F]{24}$/.test(String(req.query.material || ''))
+      ? { material: req.query.material } : {}
+    const movements = await StockMovement.find(filter)
       .sort({ createdAt: -1 })
       .limit(limit)
     res.json(movements)
@@ -102,7 +108,7 @@ router.get('/movements', async (req, res) => {
 // POST /api/stock — ajouter une matière première { name, quantity, unit, image, lowStockThreshold }
 router.post('/', canWriteStock, async (req, res) => {
   try {
-    const { name, quantity, unit, image, lowStockThreshold, note } = req.body
+    const { name, variant, quantity, unit, image, lowStockThreshold, note } = req.body
     if (!name || !String(name).trim()) {
       return res.status(400).json({ message: 'Le nom de la matière est requis' })
     }
@@ -111,6 +117,7 @@ router.post('/', canWriteStock, async (req, res) => {
 
     const material = await RawMaterial.create({
       name: String(name).trim(),
+      variant: String(variant || '').trim(),
       quantity: qty,
       unit: unit?.trim() || 'unité',
       image: image || '',
@@ -121,8 +128,8 @@ router.post('/', canWriteStock, async (req, res) => {
     // Journalise la quantité initiale comme entrée de stock
     if (qty > 0) {
       await StockMovement.create({
-        material: material._id, materialName: material.name,
-        type: 'in', quantity: qty, by: req.user?.username || '',
+        material: material._id, materialName: labelOf(material),
+        type: 'in', quantity: qty, delta: qty, by: req.user?.username || '',
         note: 'Quantité initiale',
       })
     }
@@ -146,8 +153,8 @@ router.patch('/:id/restock', canWriteStock, async (req, res) => {
     await material.save()
 
     await StockMovement.create({
-      material: material._id, materialName: material.name,
-      type: 'in', quantity: add, by: req.user?.username || '',
+      material: material._id, materialName: labelOf(material),
+      type: 'in', quantity: add, delta: add, by: req.user?.username || '',
       note: req.body.note || 'Réapprovisionnement',
     })
 
@@ -157,14 +164,75 @@ router.patch('/:id/restock', canWriteStock, async (req, res) => {
   }
 })
 
+/* POST /api/stock/:id/move  { type: 'in' | 'out' | 'set', quantity, note }
+     in  : entrée (réception de marchandise)
+     out : sortie hors commande (casse, perte, échantillon…)
+     set : inventaire — on indique la quantité réellement comptée
+
+   Le stock est modifié par une opération ATOMIQUE ($inc). L'ancienne méthode
+   lisait la quantité, la modifiait puis réenregistrait la fiche : une
+   déduction faite entre-temps par la confirmatrice était écrasée sans
+   prévenir. Deux personnes peuvent maintenant agir en même temps. */
+router.post('/:id/move', canWriteStock, async (req, res) => {
+  try {
+    const type = req.body.type
+    const q    = Number(req.body.quantity)
+    const note = String(req.body.note || '').trim().slice(0, 200)
+    const by   = req.user?.username || ''
+
+    if (!['in', 'out', 'set'].includes(type)) return res.status(400).json({ message: 'Type de mouvement invalide' })
+    if (!Number.isFinite(q) || q < 0 || (type !== 'set' && q === 0)) {
+      return res.status(400).json({ message: 'Quantité invalide' })
+    }
+
+    let before
+    if (type === 'in') {
+      before = await RawMaterial.findOneAndUpdate({ _id: req.params.id }, { $inc: { quantity: q } })
+    } else if (type === 'out') {
+      // La condition empêche de sortir plus que ce qu'il y a
+      before = await RawMaterial.findOneAndUpdate(
+        { _id: req.params.id, quantity: { $gte: q } }, { $inc: { quantity: -q } })
+      if (!before) {
+        const cur = await RawMaterial.findById(req.params.id)
+        if (!cur) return res.status(404).json({ message: 'Matière introuvable' })
+        return res.status(409).json({ message: `Stock insuffisant : il reste ${cur.quantity} ${cur.unit}.` })
+      }
+    } else {
+      before = await RawMaterial.findOneAndUpdate({ _id: req.params.id }, { $set: { quantity: q } })
+    }
+    if (!before) return res.status(404).json({ message: 'Matière introuvable' })
+
+    const delta = type === 'in' ? q : type === 'out' ? -q : q - before.quantity
+    if (delta !== 0) {
+      await StockMovement.create({
+        material: before._id, materialName: labelOf(before),
+        type: type === 'set' ? 'adjust' : type,
+        quantity: Math.abs(delta), delta, by,
+        note: note || (
+          type === 'in'  ? 'Réapprovisionnement' :
+          type === 'out' ? 'Sortie de stock' :
+          `Inventaire : ${before.quantity} → ${q}`),
+      })
+    }
+
+    res.json(await RawMaterial.findById(before._id))
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur', error: err.message })
+  }
+})
+
 // PATCH /api/stock/:id — modifier une matière (nom, unité, image, seuil, quantité=ajustement)
 router.patch('/:id', canWriteStock, async (req, res) => {
   try {
-    const { name, unit, image, lowStockThreshold, quantity, note } = req.body
+    const { name, variant, unit, image, lowStockThreshold, quantity, note } = req.body
     const material = await RawMaterial.findById(req.params.id)
     if (!material) return res.status(404).json({ message: 'Matière introuvable' })
 
-    if (name !== undefined)              material.name = String(name).trim()
+    if (name !== undefined) {
+      if (!String(name).trim()) return res.status(400).json({ message: 'Le nom de la matière est requis' })
+      material.name = String(name).trim()
+    }
+    if (variant !== undefined)           material.variant = String(variant || '').trim()
     if (unit !== undefined)              material.unit = unit?.trim() || 'unité'
     if (image !== undefined)             material.image = image
     if (lowStockThreshold !== undefined) material.lowStockThreshold = Number(lowStockThreshold)
@@ -176,8 +244,8 @@ router.patch('/:id', canWriteStock, async (req, res) => {
       const delta  = newQty - material.quantity
       material.quantity = newQty
       await StockMovement.create({
-        material: material._id, materialName: material.name,
-        type: 'adjust', quantity: Math.abs(delta), by: req.user?.username || '',
+        material: material._id, materialName: labelOf(material),
+        type: 'adjust', quantity: Math.abs(delta), delta, by: req.user?.username || '',
         note: note || `Ajustement manuel (${delta > 0 ? '+' : ''}${delta})`,
       })
     }

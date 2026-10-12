@@ -13,6 +13,9 @@ const stockMovementSchema = new mongoose.Schema(
     materialName: { type: String, required: true },   // snapshot (survit à une suppression)
     type:         { type: String, enum: ['in', 'out', 'adjust'], required: true },
     quantity:     { type: Number, required: true },   // quantité du mouvement (toujours positive)
+    // Effet réel sur le stock, AVEC son signe. Indispensable pour un
+    // inventaire ('adjust'), qui peut corriger à la hausse comme à la baisse.
+    delta:        { type: Number, default: null },
     order:        { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null }, // si lié à une commande
     by:           { type: String, default: '' },      // username de l'auteur
     note:         { type: String, default: '' },
