@@ -66,6 +66,66 @@ const pushHistory = (order, stage, req, note = '') => {
   })
 }
 
+// Deux matières peuvent porter le même nom : la variante les distingue
+const matLabel = (m) => (m.variant ? `${m.name} — ${m.variant}` : m.name)
+
+/* Annulation : les matières prévues pour la commande reviennent en stock.
+
+   La liste est d'abord « réclamée » par une mise à jour atomique : deux
+   annulations simultanées ne peuvent pas rendre deux fois les mêmes
+   matières. Elle est vidée du même geste — `materialsUsed` reste ainsi ce
+   qui est réellement sorti du stock pour la commande, et une commande
+   annulée puis rétablie repart sans rien de déduit.
+
+   Renvoie le texte à ajouter à l'historique ('' si rien n'était prévu). */
+async function returnMaterialsToStock(order, req) {
+  if (!(order.pipeline.materialsUsed || []).length) return ''
+
+  const claimed = await Order.findOneAndUpdate(
+    { _id: order._id, 'pipeline.materialsUsed.0': { $exists: true } },
+    { $set: { 'pipeline.materialsUsed': [] } },
+  ).select('pipeline.materialsUsed')
+  order.pipeline.materialsUsed = []
+  if (!claimed) return ''
+
+  const totals = new Map()            // une matière saisie sur deux lignes est rendue en une fois
+  for (const m of claimed.pipeline.materialsUsed) {
+    const q = Number(m.quantity) || 0
+    if (!m.material || q <= 0) continue
+    const id = String(m.material)
+    const t  = totals.get(id) || { name: m.name, quantity: 0 }
+    t.quantity += q
+    totals.set(id, t)
+  }
+
+  const by = req.user?.username || ''
+  const rendues = []
+  const restantes = []                // rendu impossible : la matière reste notée sur la commande
+  for (const [id, t] of totals) {
+    let mat
+    try {
+      mat = await RawMaterial.findOneAndUpdate({ _id: id }, { $inc: { quantity: t.quantity } })
+    } catch (err) {
+      console.error('[STOCK] retour en stock impossible :', err.message)
+      restantes.push({ material: id, name: t.name, quantity: t.quantity })
+      continue
+    }
+    if (!mat) continue                // matière supprimée du stock depuis : rien à rendre
+    rendues.push(`${matLabel(mat)} ×${t.quantity}`)
+    await StockMovement.create({
+      material: mat._id, materialName: matLabel(mat),
+      type: 'in', quantity: t.quantity, delta: t.quantity,
+      order: order._id, by, note: 'Commande annulée',
+    }).catch(err => console.error('[STOCK] mouvement non journalisé :', err.message))
+  }
+  if (restantes.length) order.pipeline.materialsUsed = restantes
+
+  return rendues.length ? `Matières remises en stock : ${rendues.join(', ')}` : ''
+}
+
+// Note d'historique complétée, s'il y a lieu, par le retour des matières
+const withReturn = (note, rendues) => (rendues ? `${note} — ${rendues}` : note)
+
 // Garde de transition : l'acteur doit correspondre à l'étape courante
 // (le superadmin peut agir quelle que soit l'étape).
 const guardStage = (order, expectedStage, req, res) => {
@@ -778,7 +838,9 @@ router.post('/orders/:id/cancel', authorize(
       order.pipeline.statusSetAt = new Date()
       order.pipeline.statusSetBy = req.user?.username || ''
     }
-    pushHistory(order, 'annulee', req, req.body.reason || 'Commande annulée')
+    const rendues = await returnMaterialsToStock(order, req)
+    // La requête arrive sans corps : `req.body` peut être absent
+    pushHistory(order, 'annulee', req, withReturn(req.body?.reason || 'Commande annulée', rendues))
     await order.save()
     res.json(order)
   } catch (err) {
@@ -1005,9 +1067,6 @@ router.delete('/orders/:id/notes/:noteId', async (req, res) => {
    jamais deux fois.
 ══════════════════════════════════════════════════════════════ */
 
-// Deux matières peuvent porter le même nom : la variante les distingue
-const matLabel = (m) => (m.variant ? `${m.name} — ${m.variant}` : m.name)
-
 // PUT /orders/:id/materials  { materials: [{ material, quantity }] }
 router.put('/orders/:id/materials', authorize('confirmatrice', 'chef_production'), async (req, res) => {
   try {
@@ -1023,6 +1082,11 @@ router.put('/orders/:id/materials', authorize('confirmatrice', 'chef_production'
       wanted.set(id, (wanted.get(id) || 0) + q)
     }
     if (wanted.size > 30) return res.status(400).json({ message: '30 matières au maximum par commande' })
+
+    // Une commande annulée ne retient aucune matière : elles sont revenues en stock
+    if (order.pipeline.stage === 'annulee' && wanted.size > 0) {
+      return res.status(409).json({ message: 'Commande annulée : aucune matière ne peut lui être réservée.' })
+    }
 
     // Ce qui avait déjà été déduit pour cette commande
     const previous = new Map()
@@ -1483,7 +1547,8 @@ router.patch('/orders/:id/status', authorize('confirmatrice'), async (req, res) 
       order.pipeline.cancelledRole = ''
     }
 
-    pushHistory(order, nextStage, req, `Statut → ${status}`)
+    const rendues = status === 'annulé' ? await returnMaterialsToStock(order, req) : ''
+    pushHistory(order, nextStage, req, withReturn(`Statut → ${status}`, rendues))
     await order.save()
     res.json(order)
   } catch (err) {
@@ -1716,7 +1781,8 @@ router.patch('/orders/:id/stage', authorize('superadmin', 'chef_production'), as
     }
 
     order.pipeline.stage = stage
-    pushHistory(order, stage, req, note || 'Étape modifiée par le superadmin')
+    const rendues = stage === 'annulee' ? await returnMaterialsToStock(order, req) : ''
+    pushHistory(order, stage, req, withReturn(note || 'Étape modifiée par le superadmin', rendues))
     await order.save()
     res.json(order)
   } catch (err) {
