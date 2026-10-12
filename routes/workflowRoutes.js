@@ -69,7 +69,16 @@ const pushHistory = (order, stage, req, note = '') => {
 // Deux matières peuvent porter le même nom : la variante les distingue
 const matLabel = (m) => (m.variant ? `${m.name} — ${m.variant}` : m.name)
 
-/* Annulation : les matières prévues pour la commande reviennent en stock.
+/* Une commande est « fabriquée » dès que la production l'a terminée : ses
+   matières sont alors réellement consommées (les sacs sont imprimés).
+   À évaluer AVANT de changer l'étape de la commande. */
+const APRES_FABRICATION = ['emballage', 'livraison', 'termine']
+const dejaFabriquee = (order) =>
+  !!order.pipeline.producedAt || APRES_FABRICATION.includes(order.pipeline.stage)
+
+/* Annulation : les matières prévues pour la commande reviennent en stock —
+   SAUF si elle était déjà fabriquée (`fabriquee`) : elles ont servi, elles
+   restent sorties du stock et notées sur la commande.
 
    La liste est d'abord « réclamée » par une mise à jour atomique : deux
    annulations simultanées ne peuvent pas rendre deux fois les mêmes
@@ -78,8 +87,9 @@ const matLabel = (m) => (m.variant ? `${m.name} — ${m.variant}` : m.name)
    annulée puis rétablie repart sans rien de déduit.
 
    Renvoie le texte à ajouter à l'historique ('' si rien n'était prévu). */
-async function returnMaterialsToStock(order, req) {
+async function returnMaterialsToStock(order, req, fabriquee) {
   if (!(order.pipeline.materialsUsed || []).length) return ''
+  if (fabriquee) return 'Matières non remises en stock (commande déjà fabriquée)'
 
   const claimed = await Order.findOneAndUpdate(
     { _id: order._id, 'pipeline.materialsUsed.0': { $exists: true } },
@@ -825,6 +835,7 @@ router.post('/orders/:id/cancel', authorize(
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
+    const fabriquee = dejaFabriquee(order)
     order.pipeline.stage        = 'annulee'
     order.pipeline.cancelledAt  = new Date()
     order.pipeline.cancelledBy  = req.user?.username || ''
@@ -838,7 +849,7 @@ router.post('/orders/:id/cancel', authorize(
       order.pipeline.statusSetAt = new Date()
       order.pipeline.statusSetBy = req.user?.username || ''
     }
-    const rendues = await returnMaterialsToStock(order, req)
+    const rendues = await returnMaterialsToStock(order, req, fabriquee)
     // La requête arrive sans corps : `req.body` peut être absent
     pushHistory(order, 'annulee', req, withReturn(req.body?.reason || 'Commande annulée', rendues))
     await order.save()
@@ -1083,7 +1094,7 @@ router.put('/orders/:id/materials', authorize('confirmatrice', 'chef_production'
     }
     if (wanted.size > 30) return res.status(400).json({ message: '30 matières au maximum par commande' })
 
-    // Une commande annulée ne retient aucune matière : elles sont revenues en stock
+    // Une commande annulée ne réserve plus de matière
     if (order.pipeline.stage === 'annulee' && wanted.size > 0) {
       return res.status(409).json({ message: 'Commande annulée : aucune matière ne peut lui être réservée.' })
     }
@@ -1519,6 +1530,7 @@ router.patch('/orders/:id/status', authorize('confirmatrice'), async (req, res) 
     }
 
     const wasConfirmed = order.status === 'confirmé'
+    const fabriquee    = dejaFabriquee(order)
 
     order.status = status
     order.pipeline.stage = nextStage
@@ -1547,7 +1559,7 @@ router.patch('/orders/:id/status', authorize('confirmatrice'), async (req, res) 
       order.pipeline.cancelledRole = ''
     }
 
-    const rendues = status === 'annulé' ? await returnMaterialsToStock(order, req) : ''
+    const rendues = status === 'annulé' ? await returnMaterialsToStock(order, req, fabriquee) : ''
     pushHistory(order, nextStage, req, withReturn(`Statut → ${status}`, rendues))
     await order.save()
     res.json(order)
@@ -1765,6 +1777,7 @@ router.patch('/orders/:id/stage', authorize('superadmin', 'chef_production'), as
     const APRES = ['confirmation', 'design', 'production', 'emballage', 'livraison', 'termine']
     const cible = APRES.indexOf(stage)
     const p = order.pipeline
+    const fabriquee = dejaFabriquee(order)     // avant de défaire les étapes
 
     if (cible > -1 && cible <= APRES.indexOf('livraison')) p.deliveredAt = null
     if (cible > -1 && cible <= APRES.indexOf('emballage'))  p.packagedAt  = null
@@ -1781,7 +1794,7 @@ router.patch('/orders/:id/stage', authorize('superadmin', 'chef_production'), as
     }
 
     order.pipeline.stage = stage
-    const rendues = stage === 'annulee' ? await returnMaterialsToStock(order, req) : ''
+    const rendues = stage === 'annulee' ? await returnMaterialsToStock(order, req, fabriquee) : ''
     pushHistory(order, stage, req, withReturn(note || 'Étape modifiée par le superadmin', rendues))
     await order.save()
     res.json(order)
