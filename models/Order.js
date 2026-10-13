@@ -1,4 +1,5 @@
 const mongoose = require('mongoose')
+const { normalizePhone } = require('../utils/phone')
 
 const orderItemSchema = new mongoose.Schema({
   product:        { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
@@ -153,7 +154,8 @@ const pipelineSchema = new mongoose.Schema({
 const customerInfoSchema = new mongoose.Schema({
   firstName:      { type: String, required: true },
   lastName:       { type: String, required: true },
-  phone:          { type: String, required: true },
+  // Toujours enregistré au format 0XXXXXXXXX, d'où que vienne la commande
+  phone:          { type: String, required: true, set: normalizePhone },
   // Numéros supplémentaires ajoutés par la confirmatrice (second portable,
   // fixe, numéro d'un proche…). Le premier reste `phone`.
   extraPhones:    { type: [String], default: [] },

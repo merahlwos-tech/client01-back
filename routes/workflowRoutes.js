@@ -8,6 +8,7 @@ const StockMovement = require('../models/StockMovement')
 const { sendToEcotrack } = require('../utils/ecotrack')
 const { CANCELLED_RETENTION_DAYS } = require('../utils/cleanupOldOrders')
 const { authenticateUser, authorize, isSuperadmin } = require('../middleware/auth')
+const { normalizePhone } = require('../utils/phone')
 
 // Un vrai superadmin peut passer outre les garde-fous metier (sauter une
 // etape, modifier une commande deja fabriquee). Le visiteur de l'acces libre,
@@ -496,6 +497,19 @@ router.get('/orders/slow-count', async (req, res) => {
 ══════════════════════════════════════════════════════════════ */
 const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+/* Les numéros sont enregistrés au format 0XXXXXXXXX. Un numéro cherché avec
+   des espaces, des points ou un +213 — même tapé à moitié — doit le retrouver. */
+const looksLikePhone = (q) => /^[\d\s+().\-\u0660-\u0669\u06F0-\u06F9]{3,}$/.test(q)
+function phoneTerm(q) {
+  const d = q
+    .replace(/[\u0660-\u0669]/g, c => String(c.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, c => String(c.charCodeAt(0) - 0x06F0))
+    .replace(/\D/g, '')
+  if (d.startsWith('00213')) return '0' + d.slice(5).replace(/^0/, '')
+  if (q.trim().startsWith('+') && d.startsWith('213')) return '0' + d.slice(3).replace(/^0/, '')
+  return normalizePhone(q)
+}
+
 // GET /api/workflow/search?q=nom|téléphone|commune|référence
 router.get('/search', async (req, res) => {
   try {
@@ -511,6 +525,14 @@ router.get('/search', async (req, res) => {
       { 'customerInfo.commune':     rx },
       { 'customerInfo.wilaya':      rx },
     ]
+
+    if (looksLikePhone(q)) {
+      const tel = phoneTerm(q)
+      if (tel.length >= 3 && tel !== q) {
+        const rt = new RegExp(escapeRx(tel))
+        or.push({ 'customerInfo.phone': rt }, { 'customerInfo.extraPhones': rt })
+      }
+    }
 
     /* Référence affichée dans l'atelier = les 8 derniers caractères de l'_id.
        On compare donc sur sa forme textuelle. */
@@ -1606,11 +1628,11 @@ const cleanColor = (v) => String(v || '').trim().slice(0, 120)
 const MAX_EXTRA_PHONES = 5
 function normalizePhones(raw, mainPhone = '') {
   if (!Array.isArray(raw)) return []
-  const main = String(mainPhone || '').trim()
+  const main = normalizePhone(mainPhone)
   const seen = new Set(main ? [main] : [])
   const out = []
   for (const p of raw) {
-    const v = String(p || '').trim().slice(0, 30)
+    const v = normalizePhone(p).slice(0, 30)
     if (!v || seen.has(v)) continue
     seen.add(v)
     out.push(v)
