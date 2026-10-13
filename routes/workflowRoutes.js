@@ -1641,6 +1641,9 @@ function normalizePhones(raw, mainPhone = '') {
   return out
 }
 
+// Fichiers de logo acceptés pour un article
+const MAX_ITEM_LOGOS = 4
+
 // Valide et normalise les articles reçus du client
 async function normalizeItems(rawItems) {
   const items = []
@@ -1673,6 +1676,10 @@ async function normalizeItems(rawItems) {
       numberOfColors: it.numberOfColors != null ? Number(it.numberOfColors) : null,
       bagColor:       cleanColor(it.bagColor),
       printColor:     cleanColor(it.printColor),
+      // Logo et consignes propres à cet article (commande de plusieurs articles)
+      logoUrls:       Array.isArray(it.logoUrls)
+        ? it.logoUrls.filter(u => typeof u === 'string' && u).slice(0, MAX_ITEM_LOGOS) : [],
+      notes:          String(it.notes || '').trim().slice(0, 1000),
     })
   }
   return items

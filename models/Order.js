@@ -12,6 +12,10 @@ const orderItemSchema = new mongoose.Schema({
   // l'encre. Le designer et la production s'y réfèrent pour fabriquer.
   bagColor:       { type: String, default: '' },      // couleur du sac / support
   printColor:     { type: String, default: '' },      // couleur de l'impression
+  // Propres à CET article quand la commande en compte plusieurs : chacun peut
+  // avoir son logo (photos) et ses consignes.
+  logoUrls:       { type: [String], default: [] },
+  notes:          { type: String, default: '' },
   quantity:       { type: Number, required: true },
   price:          { type: Number, required: true },
 })
@@ -185,6 +189,34 @@ const orderSchema = new mongoose.Schema({
   pipeline:          { type: pipelineSchema, default: () => ({}) },
 }, { timestamps: true })
 
+/* Consignes de tous les articles réunies en un seul texte.
+   (La même fonction existe côté site : front/src/utils/orderNotes.js.) */
+function combinedNotes(items = []) {
+  return items
+    .filter(i => String(i.notes || '').trim())
+    .map(i => `${i.name}${i.size ? ` ${i.size}` : ''} : ${String(i.notes).trim()}`)
+    .join('\n')
+}
+
+/* Les logos et consignes propres à un article sont aussi reportés au niveau
+   de la commande. Tout ce qui lit la commande comme avant — vignettes des
+   listes, ancienne page admin, nettoyage des fichiers à la purge — continue
+   ainsi de fonctionner sans rien savoir du détail par article. */
+orderSchema.pre('validate', function () {
+  const ci = this.customerInfo
+  if (!ci) return
+  const known   = ci.logoUrls || []
+  const missing = [...new Set((this.items || []).flatMap(i => i.logoUrls || []))]
+    .filter(u => u && !known.includes(u))
+  if (missing.length) ci.logoUrls = [...known, ...missing]
+
+  // Pas de description générale : on y met le résumé des consignes par article
+  if (!String(ci.description || '').trim()) {
+    const all = combinedNotes(this.items || [])
+    if (all) ci.description = all
+  }
+})
+
 orderSchema.index({ createdAt: -1 })
 orderSchema.index({ status: 1 })
 orderSchema.index({ status: 1, total: 1 })
@@ -202,3 +234,4 @@ module.exports.URGENCY_LEVELS  = URGENCY_LEVELS
 module.exports.DESIGNER_TAGS     = DESIGNER_TAGS
 module.exports.DEADLINE_DAYS     = DEADLINE_DAYS
 module.exports.INSOLATION_STATUS = INSOLATION_STATUS
+module.exports.combinedNotes     = combinedNotes
