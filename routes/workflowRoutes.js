@@ -24,6 +24,13 @@ const canForce = (req) =>
   req.user?.role === 'chef_production' ||
   (req.user?.openAccess && req.body?.asChef === true)
 
+// Le designer peut modifier une commande à N'IMPORTE QUELLE étape : c'est lui
+// qui échange avec le client sur le contenu. Même principe que pour le chef :
+// en accès libre, l'intention est marquée par `asDesigner: true`.
+const isDesigner = (req) =>
+  req.user?.role === 'designer' ||
+  (req.user?.openAccess && req.body?.asDesigner === true)
+
 
 router.use(authenticateUser)
 
@@ -1650,14 +1657,15 @@ async function normalizeItems(rawItems) {
 }
 
 // PUT /orders/:id — modifier une commande (client + articles + total)
-// Le chef de production peut aussi modifier une commande déjà en fabrication.
-router.put('/orders/:id', authorize('confirmatrice', 'chef_production'), async (req, res) => {
+// Le chef de production peut aussi modifier une commande déjà en fabrication,
+// et le designer à n'importe quelle étape.
+router.put('/orders/:id', authorize('confirmatrice', 'chef_production', 'designer'), async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Commande introuvable' })
 
     const workedStages = ['production', 'emballage', 'livraison', 'termine']
-    if (workedStages.includes(order.pipeline.stage) && !canForce(req)) {
+    if (workedStages.includes(order.pipeline.stage) && !canForce(req) && !isDesigner(req)) {
       return res.status(409).json({
         message: `Commande déjà à l'étape « ${order.pipeline.stage} », modification impossible.`,
       })
@@ -1694,7 +1702,8 @@ router.put('/orders/:id', authorize('confirmatrice', 'chef_production'), async (
       order.total = Number(total)
     }
 
-    pushHistory(order, order.pipeline.stage, req, 'Commande modifiée')
+    pushHistory(order, order.pipeline.stage, req,
+      isDesigner(req) ? 'Commande modifiée par le designer' : 'Commande modifiée')
     await order.save()
     res.json(order)
   } catch (err) {
